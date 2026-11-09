@@ -6,6 +6,11 @@ model_list:
     litellm_params:
       model: deepinfra/zai-org/GLM-5.2
       api_key: os.environ/DEEPINFRA_API_KEY
+      # GLM's time to first token varies a lot (20 s, then 196 s, for the same
+      # 12k-token Claude Code prompt). Give up after this many seconds without
+      # a byte and answer from the fallback below instead.
+      stream_timeout: 30
+      timeout: 90
   # MemMachine core's embedder, reached through this same gateway. GLM has no
   # embedding model, so this one is OpenAI's; changing it invalidates every
   # vector core has stored.
@@ -21,11 +26,29 @@ model_list:
     litellm_params:
       model: deepinfra/zai-org/GLM-5.2
       api_key: os.environ/DEEPINFRA_API_KEY
+      stream_timeout: 30
+      timeout: 90
+
+  # Used only when GLM fails or times out (router_settings.fallbacks). Same
+  # OpenAI key as the embedder.
+  - model_name: fallback-gpt-4.1
+    litellm_params:
+      model: openai/gpt-4.1
+      api_key: os.environ/OPENAI_API_KEY
 
 router_settings:
   # A memmachine- model name gets memory; the plain name does not (task model).
   model_group_alias:
     "memmachine-glm-5.2": "glm-5.2"
+  # Fallbacks are looked up by the name the client asked for: the alias, or the
+  # exact claude-... name (a "claude-*" key would not match). default_fallbacks
+  # covers every other name.
+  fallbacks:
+    - glm-5.2: ["fallback-gpt-4.1"]
+    - memmachine-glm-5.2: ["fallback-gpt-4.1"]
+  default_fallbacks: ["fallback-gpt-4.1"]
+  # Straight to the fallback: retrying GLM would wait out the timeout again.
+  num_retries: 0
 
 litellm_settings:
   callbacks:

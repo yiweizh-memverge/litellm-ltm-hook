@@ -90,9 +90,10 @@ tar xzf keycloak-26.7.5.tar.gz && rm keycloak-26.7.5.tar.gz
 # MemMachine core: the upstream repo's `speedkick` branch, pinned to the commit
 # this stack was tested with (2026-09-10; the branch has moved on since), and
 # installed into its own venv by uv (the workspace's lock file pins everything).
+# The qdrant extra is required: without it core starts, but every memory call is a 500.
 cd $ENV_DIR/memmachine
 git clone -b speedkick https://github.com/MemMachine/MemMachine.git src
-(cd src && git checkout 0b15fad && uv sync --package memmachine-server)
+(cd src && git checkout 0b15fad && uv sync --package memmachine-server --extra qdrant)
 ls src/.venv/bin/memmachine-server
 
 # Qdrant, a single binary.

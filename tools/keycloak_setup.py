@@ -18,6 +18,15 @@ What it makes, in realm "corp":
 
 Client secrets are generated once and written to SECRETS_OUT (mode 600); an existing
 file is reused so reruns keep the same secrets.
+
+KEYCLOAK_PHASE splits this for a demo that adds MemMachine to an existing setup:
+  all       (default) everything above, as one stack
+  baseline  what the customer already has: the realm, the employee_id attribute,
+            the users, and client "open-webui" without the employee_id claim
+  integrate only additions to that realm, never changing what is there: client
+            "memmachine-platform" with its service account, and the employee_id
+            claim added to the existing "open-webui" client (its secret, redirect
+            URIs and settings are left alone)
 """
 import json
 import os
@@ -105,7 +114,7 @@ MAPPER = {
 }
 
 
-def ensure_client(t, client_id, secret, base_urls, callback, service_account=False):
+def ensure_client(t, client_id, secret, base_urls, callback, service_account=False, mapper=True):
     rep = {
         "clientId": client_id, "enabled": True, "protocol": "openid-connect",
         "publicClient": False, "secret": secret, "standardFlowEnabled": True,
@@ -113,7 +122,7 @@ def ensure_client(t, client_id, secret, base_urls, callback, service_account=Fal
         "redirectUris": [u.rstrip("/") + callback for u in base_urls],
         "webOrigins": [u.rstrip("/") for u in base_urls],
         "attributes": {"post.logout.redirect.uris": "##".join(u.rstrip("/") + "/*" for u in base_urls)},
-        "protocolMappers": [MAPPER],
+        "protocolMappers": [MAPPER] if mapper else [],
     }
     _, found, _ = call("GET", f"/admin/realms/{REALM}/clients?clientId={client_id}", token=t)
     if found:
@@ -122,7 +131,7 @@ def ensure_client(t, client_id, secret, base_urls, callback, service_account=Fal
         s, body, _ = call("PUT", f"/admin/realms/{REALM}/clients/{cid}", {**found[0], **rep}, t)
         assert s == 204, (s, body)
         _, mappers, _ = call("GET", f"/admin/realms/{REALM}/clients/{cid}/protocol-mappers/models", token=t)
-        if not any(m["name"] == "employee_id" for m in mappers):
+        if mapper and not any(m["name"] == "employee_id" for m in mappers):
             call("POST", f"/admin/realms/{REALM}/clients/{cid}/protocol-mappers/models", MAPPER, t)
         print(f"client {client_id}: updated")
     else:
@@ -132,6 +141,28 @@ def ensure_client(t, client_id, secret, base_urls, callback, service_account=Fal
         cid = found[0]["id"]
         print(f"client {client_id}: created")
     return cid
+
+
+def add_claim_to_existing_client(t, client_id):
+    """Add the employee_id claim to a client that is already there; change nothing else."""
+    _, found, _ = call("GET", f"/admin/realms/{REALM}/clients?clientId={client_id}", token=t)
+    if not found:
+        sys.exit(f"client {client_id!r} is not in realm {REALM!r}: integrate expects it to exist")
+    cid = found[0]["id"]
+    _, mappers, _ = call("GET", f"/admin/realms/{REALM}/clients/{cid}/protocol-mappers/models", token=t)
+    if any(m["name"] == "employee_id" for m in mappers):
+        print(f"client {client_id}: employee_id claim already there")
+        return
+    s, body, _ = call("POST", f"/admin/realms/{REALM}/clients/{cid}/protocol-mappers/models", MAPPER, t)
+    assert s == 201, (s, body)
+    print(f"client {client_id}: employee_id claim added (nothing else changed)")
+
+
+def require_profile_attribute(t):
+    _, profile, _ = call("GET", f"/admin/realms/{REALM}/users/profile", token=t)
+    if not any(a["name"] == "employee_id" for a in profile["attributes"]):
+        sys.exit(f"realm {REALM!r} has no employee_id user attribute: integrate expects it")
+    print("user profile: employee_id present")
 
 
 def grant_view_users(t, client_uuid):
@@ -178,17 +209,26 @@ def load_secrets(path):
 
 
 def main():
-    passwords = dict(line.split() for line in open(os.environ["ACCOUNTS_FILE"]) if "@" in line)
+    phase = os.environ.get("KEYCLOAK_PHASE", "all")
+    if phase not in ("all", "baseline", "integrate"):
+        sys.exit(f"KEYCLOAK_PHASE must be all, baseline or integrate, not {phase!r}")
     sec = load_secrets(os.environ["SECRETS_OUT"])
     t = admin_token()
-    ensure_realm(t)
-    ensure_profile_attribute(t)
-    ensure_client(t, "open-webui", sec["OWUI_OIDC_CLIENT_SECRET"], OWUI_URLS, "/oauth/oidc/callback")
-    pid = ensure_client(t, "memmachine-platform", sec["PLATFORM_OIDC_CLIENT_SECRET"], PORTAL_URLS,
-                        "/portal/auth/callback", service_account=True)
-    grant_view_users(t, pid)
-    for email, (first, last, emp) in USERS.items():
-        ensure_user(t, email, first, last, emp, passwords[email])
+    if phase in ("all", "baseline"):
+        passwords = dict(line.split() for line in open(os.environ["ACCOUNTS_FILE"]) if "@" in line)
+        ensure_realm(t)
+        ensure_profile_attribute(t)
+        ensure_client(t, "open-webui", sec["OWUI_OIDC_CLIENT_SECRET"], OWUI_URLS,
+                      "/oauth/oidc/callback", mapper=phase == "all")
+        for email, (first, last, emp) in USERS.items():
+            ensure_user(t, email, first, last, emp, passwords[email])
+    if phase in ("all", "integrate"):
+        if phase == "integrate":
+            require_profile_attribute(t)
+            add_claim_to_existing_client(t, "open-webui")
+        pid = ensure_client(t, "memmachine-platform", sec["PLATFORM_OIDC_CLIENT_SECRET"], PORTAL_URLS,
+                            "/portal/auth/callback", service_account=True)
+        grant_view_users(t, pid)
 
 
 if __name__ == "__main__":
