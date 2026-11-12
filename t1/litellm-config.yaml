@@ -1,0 +1,32 @@
+# LiteLLM config for T1 (LiteLLM 1.98.0, SK hynix's version).
+# Both models go to the fake provider (t1/fake_provider.py), which records every
+# header and body it receives for the leak checks.
+model_list:
+  # Gets memory: the hook acts only on memmachine- models.
+  - model_name: memmachine-fake
+    litellm_params:
+      model: openai/fake-model
+      api_base: http://127.0.0.1:18200/v1
+      api_key: fake-provider-key
+  # Plain model, for Open WebUI's background tasks (titles, tags, follow-ups).
+  - model_name: fake
+    litellm_params:
+      model: openai/fake-model
+      api_base: http://127.0.0.1:18200/v1
+      api_key: fake-provider-key
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 120
+  # Step 1: a probe that only records what the callback sees (t1/t1_probe.py).
+  # The hook under test (t1_token_hook.handler) is added at step 2.
+  callbacks:
+    - t1_probe.probe
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  # Must stay off: with it on, LiteLLM forwards the user's token to the provider.
+  forward_llm_provider_auth_headers: false
+  # Worst case for the leak check: keep request bodies in the spend logs.
+  store_prompts_in_spend_logs: true

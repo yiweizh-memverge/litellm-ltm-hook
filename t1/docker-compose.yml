@@ -1,0 +1,44 @@
+# T1 validation stack, container part: Keycloak and LiteLLM's Postgres.
+# Open WebUI, LiteLLM, the mock gateway and the fake model provider run from
+# venvs under $T1_ENV (see t1/README.md): the hook under test loads straight from
+# this repo, and Open WebUI's image does not fit on this host's root disk.
+#
+# Every service uses the host network, so all URLs are http://127.0.0.1:<port>
+# and token issuers match for the browser, Open WebUI and the gateway alike.
+#
+#   docker compose -f t1/docker-compose.yml --env-file $T1_ENV/compose.env up -d
+#
+# Ports (all 127.0.0.1): Keycloak 18180, Postgres 15432.
+name: t1-tokenpath
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:${KEYCLOAK_VERSION:-26.7.5}
+    network_mode: host
+    command:
+      - start-dev
+      - --http-host=127.0.0.1
+      - --http-port=18180
+      - --hostname=http://127.0.0.1:18180
+      - --health-enabled=true
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD}
+      JAVA_OPTS_KC_HEAP: "-Xms256m -Xmx768m"
+    volumes:
+      - keycloak-data:/opt/keycloak/data
+
+  postgres:
+    image: postgres:16
+    network_mode: host
+    command: ["postgres", "-p", "15432", "-c", "listen_addresses=127.0.0.1"]
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: litellm
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  keycloak-data:
+  postgres-data:
