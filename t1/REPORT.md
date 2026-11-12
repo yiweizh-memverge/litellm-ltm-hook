@@ -20,11 +20,15 @@ personal memory instead of none (finding 1). T1's hook still applies the old rul
 |---|---|
 | LiteLLM | 1.98.0 (SK hynix's) |
 | Open WebUI | 0.12.5, and 0.11.3 |
-| Keycloak | 26.7.5, realm `corp`, default 300 s access tokens |
+| Keycloak | 26.7.5, realm `corp`, default 300 s access tokens (see note) |
 | Gateway, hook, model provider | T1 stand-ins: `t1/gateway.py`, `t1/t1_token_hook.py`, `t1/fake_provider.py` |
 
 Open WebUI's connection: `system_oauth`, LiteLLM's key in `x-litellm-api-key`, and per-request
 headers `{{CHAT_ID}}`, `{{MESSAGE_ID}}`, `{{USER_MESSAGE_ID}}`, `{{TASK}}`, `{{MODEL_ID}}`.
+
+Note: after A7, Open WebUI's client was left at 900 s (`set_owui_lifespan(None)` dropped the
+attribute from the update, which Keycloak ignores; fixed 2026-11-12), so the `core` runs used
+900 s Open WebUI tokens. No `core` check depends on it: A6 uses tokens minted by `t1-tester`.
 
 ## Results
 
@@ -80,6 +84,50 @@ one of those requests also carried the user's token.**
 - LiteLLM's spend logs keep request headers, minus `authorization` and `x-litellm-api-key`: the
   `x-openwebui-*` IDs are kept.
 - A new workspace model is chat-able only after Open WebUI's model list refreshes (`/api/models`).
+
+## T6 gate check: Keycloak hangs or is down (2026-11-12)
+
+`$PY t1/t6_hang.py`; raw results in `$T1_ENV/logs/results-t6.json`. Open WebUI 0.12.5, Keycloak
+paused with `docker pause` (accepts connections, never answers), then stopped (connection refused).
+
+| Case | Chat answered after | Memory |
+|---|---|---|
+| Keycloak up (baseline) | 0.1 s | yes |
+| Hang, `system_oauth`, one session, 300 s token | **333 s** | no |
+| Hang, same person's second chat 5 s later | **629 s** | no |
+| Hang, person with two Open WebUI sessions | **634 s** | no |
+| Hang, a connection with **no user token** (Open WebUI without approach A) | **333 s** | — |
+| Hang, 900 s token, refresh not yet due | 0.1 s | yes |
+| Keycloak stopped (connection refused) | 0.1 s | no |
+| After Keycloak recovers, for everyone whose refresh failed | 0.1 s | **no, until they sign in to Open WebUI again** |
+
+Why, in Open WebUI's code (0.12.5; 0.11.3 the same):
+
+- The chat middleware fetches the person's SSO token three times per chat (`'__oauth_token__':
+  await get_system_oauth_token(...)` in `utils/middleware.py`), **whatever the connection's auth
+  type**, and `get_oauth_token` refreshes when 5 minutes or less are left.
+- The refresh (`_perform_token_refresh` in `utils/oauth.py`) sets no timeout, so aiohttp's default
+  applies: `ClientTimeout(total=300)`. A refresh that fails, by timeout or refusal, **deletes the
+  session**, so the person's token is gone until they sign in again.
+- A second chat of the same session waits on the per-session refresh lock, then refreshes again
+  with the deleted session's token: two timeouts. A person with several sessions (browsers,
+  devices) falls back to the most recent other one: two timeouts too.
+
+So:
+
+1. **The hang is Open WebUI's, not approach A's.** A chat on a connection that sends no user token
+   stalled the same 333 s. Any Open WebUI signed in through Keycloak is exposed today, approach B
+   included; approach A adds nothing to how long a chat waits.
+2. **What approach A adds is silent memory loss.** After any failed refresh, a hang or a short
+   outage, the person keeps chatting without memory until they sign in to Open WebUI again, with
+   nothing telling them. #1561 names this ("Open WebUI dropped the person's corporate tokens after
+   a failed refresh"); this measures it.
+3. **A longer access-token lifetime shrinks the exposure** (a 900 s token with more than 5 minutes
+   left was untouched), at the cost of the revocation window (T5). A real fix is in Open WebUI: a
+   short refresh timeout, and not deleting the session on a timeout or connection error.
+
+Not run: the ~30 s beyond the 300 s timeout is unexplained; Open WebUI with several workers or
+Redis; the browser's own behaviour while waiting (the chat UI, not the API).
 
 ## Not covered by T1
 

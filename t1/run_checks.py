@@ -123,7 +123,8 @@ def set_owui_lifespan(seconds):
     c = kc_client(t, "open-webui")
     attrs = dict(c.get("attributes") or {})
     if seconds is None:
-        attrs.pop("access.token.lifespan", None)
+        # An empty value restores the realm's; leaving the key out of the update keeps the old one.
+        attrs["access.token.lifespan"] = ""
     else:
         attrs["access.token.lifespan"] = str(seconds)
     c["attributes"] = attrs
