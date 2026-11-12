@@ -103,9 +103,13 @@ paused with `docker pause` (accepts connections, never answers), then stopped (c
 
 Why, in Open WebUI's code (0.12.5; 0.11.3 the same):
 
-- The chat middleware fetches the person's SSO token three times per chat (`'__oauth_token__':
-  await get_system_oauth_token(...)` in `utils/middleware.py`), **whatever the connection's auth
-  type**, and `get_oauth_token` refreshes when 5 minutes or less are left.
+- The chat middleware retrieves the person's SSO token (`'__oauth_token__': await
+  get_system_oauth_token(...)` in `utils/middleware.py`), **whatever the connection's auth type**,
+  at several points: preparing the request (`process_chat_payload`), handling a streaming response
+  (`streaming_chat_response_handler`), and, only with filter functions, resuming tool calls
+  (`resume_tool_calls`). Each lookup refreshes only when 5 minutes or less are left
+  (`get_oauth_token`), so these are lookups, not a fixed number of refreshes per chat; refresh is
+  on demand, never on a timer.
 - The refresh (`_perform_token_refresh` in `utils/oauth.py`) sets no timeout, so aiohttp's default
   applies: `ClientTimeout(total=300)`. A refresh that fails, by timeout or refusal, **deletes the
   session**, so the person's token is gone until they sign in again.
