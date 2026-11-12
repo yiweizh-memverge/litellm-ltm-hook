@@ -1,0 +1,33 @@
+# A9 variant of litellm-config.yaml: forward_llm_provider_auth_headers ON.
+# Both models go to the fake provider (t1/fake_provider.py), which records every
+# header and body it receives for the leak checks.
+model_list:
+  # Gets memory: the hook acts only on memmachine- models.
+  - model_name: memmachine-fake
+    litellm_params:
+      model: openai/fake-model
+      api_base: http://127.0.0.1:18200/v1
+      api_key: fake-provider-key
+  # Plain model, for Open WebUI's background tasks (titles, tags, follow-ups).
+  - model_name: fake
+    litellm_params:
+      model: openai/fake-model
+      api_base: http://127.0.0.1:18200/v1
+      api_key: fake-provider-key
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 120
+  # t1_probe records what a callback sees of the user's token (claims and a hash
+  # only); t1_token_hook is the hook under test.
+  callbacks:
+    - t1_probe.probe
+    - t1_token_hook.handler
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  # A9 ONLY: turned on to show what it does. Never use this config otherwise.
+  forward_llm_provider_auth_headers: true
+  # Worst case for the leak check: keep request bodies in the spend logs.
+  store_prompts_in_spend_logs: true

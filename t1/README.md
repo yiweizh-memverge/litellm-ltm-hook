@@ -53,7 +53,7 @@ T1_GATEWAY_LOG=$LOGS/gateway.jsonl nohup $PY t1/gateway.py > $LOGS/gateway.out 2
 nohup t1/run_litellm.sh > $LOGS/litellm.out 2>&1 &      # ~1 minute to start
 
 t1/finish_env.sh                                 # realm corp, Open WebUI's LiteLLM key
-nohup t1/run_openwebui.sh > ~/t1-tokenpath-env/logs/openwebui.out 2>&1 &
+t1/svc.sh start openwebui                       # or: t1/svc.sh start all
 ```
 
 Open WebUI reads `OPENAI_API_CONFIGS` only on its first start with an empty data

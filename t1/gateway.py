@@ -113,6 +113,10 @@ async def _authenticate(request: Request):
     try:
         if jwt.get_unverified_header(token).get("alg") != "RS256":
             return None, _refuse(401, "refused", "alg-not-rs256", claims, path)
+        # Name another issuer's token as such before looking for its key, which only
+        # this issuer's key set would hold. The verified decode below checks iss again.
+        if claims.get("iss") != ISSUER:
+            return None, _refuse(401, "refused", "wrong-issuer", claims, path)
         c = jwt.decode(token, await _signing_key(token), algorithms=["RS256"], issuer=ISSUER,
                        leeway=LEEWAY, options={"verify_aud": False, "require": ["exp", "iss", "sub"]})
     except jwt.ExpiredSignatureError:
