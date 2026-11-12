@@ -70,7 +70,11 @@ async def chat(request: Request):
                 "function": {"name": fn, "arguments": "{}"}}
         message, finish = {"role": "assistant", "content": None, "tool_calls": [call]}, "tool_calls"
     else:
-        message, finish = {"role": "assistant", "content": f"OK: {_last_user_text(messages)[:200]}"}, "stop"
+        mem = [m for m in messages if m.get("role") == "system"
+               and str(m.get("content", "")).startswith("Memory (quoted data")]
+        lines = [l[2:] for m in mem for l in str(m["content"]).splitlines() if l.startswith("> ")]
+        note = f"\n\n[memory injected: {len(lines)} item(s)]" + "".join(f"\n- {l[:120]}" for l in lines)
+        message, finish = {"role": "assistant", "content": f"OK: {_last_user_text(messages)[:200]}{note}"}, "stop"
 
     if not body.get("stream"):
         return JSONResponse({

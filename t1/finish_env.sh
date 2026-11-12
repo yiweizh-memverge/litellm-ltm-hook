@@ -11,7 +11,7 @@ set -a; . "$T1_ENV/compose.env"; . "$T1_ENV/litellm.env"; set +a
 # 1. Realm "corp", clients open-webui and memmachine-platform, users from accounts.txt.
 KEYCLOAK_URL=http://127.0.0.1:18180 \
 KEYCLOAK_ADMIN=$KC_ADMIN KEYCLOAK_ADMIN_PASSWORD=$KC_ADMIN_PASSWORD \
-OWUI_URLS=http://127.0.0.1:18087,http://localhost:18087 \
+OWUI_URLS=http://127.0.0.1:18087,http://localhost:18087,http://127.0.0.1:18088,http://localhost:18088 \
 PORTAL_URLS=http://127.0.0.1:18100,http://localhost:18100 \
 ACCOUNTS_FILE=$T1_ENV/accounts.txt SECRETS_OUT=$T1_ENV/keycloak-clients.env \
   python3 "$REPO/tools/keycloak_setup.py"
