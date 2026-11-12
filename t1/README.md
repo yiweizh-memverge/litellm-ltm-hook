@@ -46,12 +46,11 @@ uv venv owui-v0.12.5 --python 3.12
 VIRTUAL_ENV=owui-v0.12.5 uv pip install 'open-webui==0.12.5'
 cd -
 
-# Fake provider and LiteLLM
-FAKE_PROVIDER_LOG=~/t1-tokenpath-env/logs/provider.jsonl \
-  nohup ~/t1-tokenpath-env/litellm-venv/bin/python t1/fake_provider.py > ~/t1-tokenpath-env/logs/fake_provider.out 2>&1 &
-(cd t1 && set -a && . ~/t1-tokenpath-env/litellm.env && set +a && \
-  PATH=$HOME/t1-tokenpath-env/litellm-venv/bin:$PATH nohup litellm --config litellm-config.yaml \
-  --host 127.0.0.1 --port $LITELLM_PORT > ~/t1-tokenpath-env/logs/litellm.out 2>&1 &)
+# Fake provider, mock gateway, LiteLLM (with t1_probe and t1_token_hook)
+PY=~/t1-tokenpath-env/litellm-venv/bin/python; LOGS=~/t1-tokenpath-env/logs
+FAKE_PROVIDER_LOG=$LOGS/provider.jsonl nohup $PY t1/fake_provider.py > $LOGS/fake_provider.out 2>&1 &
+T1_GATEWAY_LOG=$LOGS/gateway.jsonl nohup $PY t1/gateway.py > $LOGS/gateway.out 2>&1 &
+nohup t1/run_litellm.sh > $LOGS/litellm.out 2>&1 &      # ~1 minute to start
 
 t1/finish_env.sh                                 # realm corp, Open WebUI's LiteLLM key
 nohup t1/run_openwebui.sh > ~/t1-tokenpath-env/logs/openwebui.out 2>&1 &
@@ -64,6 +63,20 @@ delete `$T1_ENV/owui-data-<version>`.
 Test users are in `$T1_ENV/accounts.txt` (`email password`). From a laptop:
 `ssh -L 18087:127.0.0.1:18087 -L 18180:127.0.0.1:18180 <this host>`, then open
 http://127.0.0.1:18087 and sign in with "Corp SSO".
+
+## Quick check
+
+```bash
+PY=~/t1-tokenpath-env/litellm-venv/bin/python
+$PY t1/smoke.py alice@corp.example "my favourite colour is teal"
+$PY t1/smoke.py alice@corp.example "what is my favourite colour?"   # gets the first turn as memory
+curl -s http://127.0.0.1:18100/t1/state                            # accounts by sub, memory counts
+```
+
+Logs in `$T1_ENV/logs`: `hook.jsonl` (the hook's decisions), `gateway.jsonl`
+(the gateway's), `probe.jsonl` (what a callback sees of the token),
+`provider.jsonl` (everything the model provider received). None holds a token:
+the hook, gateway and probe log claims and a SHA-256 prefix only.
 
 ## Notes
 

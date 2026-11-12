@@ -18,10 +18,11 @@ model_list:
 litellm_settings:
   drop_params: true
   request_timeout: 120
-  # Step 1: a probe that only records what the callback sees (t1/t1_probe.py).
-  # The hook under test (t1_token_hook.handler) is added at step 2.
+  # t1_probe records what a callback sees of the user's token (claims and a hash
+  # only); t1_token_hook is the hook under test.
   callbacks:
     - t1_probe.probe
+    - t1_token_hook.handler
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
