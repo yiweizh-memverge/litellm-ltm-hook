@@ -1,11 +1,18 @@
 # T1 report: approach A's user-token path
 
-**Date:** 2026-11-12 · **Branch:** `validate/t1-token-path` · **Design:** MemVerge/MemMachine-Platform#1561
+**Date:** 2026-11-12 · **Branch:** `validate/t1-token-path` · **Design:** MemVerge/MemMachine-Platform#1561 at `4e15ccc` (re-read against `520b19c`, below)
 
-**Result:** the path works on SK hynix's LiteLLM version. Each Open WebUI user's own Keycloak
-access token reaches the hook through LiteLLM, the gateway verifies it itself, memory
-round-trips per person and stays isolated, and the token reached no model provider, log or
-database we checked. Three findings need action (below).
+**Result:** with the versions below and T1's stand-in gateway, hook and model provider, the basic
+personal-memory path with the user's token **forwarded as is** works on SK hynix's LiteLLM
+version. Each Open WebUI user's own Keycloak access token reaches the hook through LiteLLM, the
+gateway verifies it itself, memory round-trips per person and stays isolated, and the token reached
+no model provider, log or database we checked. Not verified: a real Open WebUI streaming and
+tool-server turn, several LiteLLM workers, team permissions, the token-exchange path (the PR's
+recommended mode since `63964d6`), and the real platform behind the gateway.
+
+**PR changes since `4e15ccc`:** the PR now recommends exchanging the token at the provider, with
+forwarding as the fallback, so T1 tested the fallback; and an unresolved `{{MODEL_ID}}` now uses
+personal memory instead of none (finding 1). T1's hook still applies the old rule.
 
 ## Versions
 
@@ -48,19 +55,20 @@ one of those requests also carried the user's token.**
 
 ## Findings
 
-1. **`{{MODEL_ID}}` needs Open WebUI 0.12.2 (confirmed).** On 0.11.3 the placeholder is sent
-   unresolved, and under #1561's rule ("an unresolved placeholder → no memory") every request on
-   the connection gets no memory, personal included. Without that header, 0.11.3 passes every
-   check. So: 0.10.0 for personal memory, 0.12.2 for team projects by workspace model, and the
-   `{{MODEL_ID}}` header only on connections that need it. (A comment for #1561 is drafted.)
+1. **`{{MODEL_ID}}` needs Open WebUI 0.12.2 (confirmed). Taken into the PR at `520b19c`.** On
+   0.11.3 the placeholder is sent unresolved, and under `4e15ccc`'s rule ("an unresolved placeholder
+   → no memory"), which T1's hook implements, every request on the connection got no memory,
+   personal included. Without that header, 0.11.3 passes every check. `520b19c` now asks for 0.12.2
+   for team projects only and treats an unresolved model placeholder as personal memory; T1's hook
+   has not been changed to that rule or re-run.
 2. **At Keycloak's default 300 s access token, Open WebUI refreshes on every request.** It
    refreshes when 5 minutes or less are left, which is always: a browser prompt cost ~5 Keycloak
    refreshes (the chat plus three background tasks plus one), a scripted prompt 2. At 900 s:
-   none. Matches #1561's "Open WebUI's token lifetime"; it multiplies Keycloak load ~5× per prompt
+   none within a short run; a run across several token lifetimes would show the steady state. Matches #1561's "Open WebUI's token lifetime"; it multiplies Keycloak load ~5× per prompt
    at SK's scale and makes the token differ on every request of a turn (A6). SK should give
    Open WebUI's client a longer access-token lifetime (second-round question).
 3. **`forward_llm_provider_auth_headers` on did not send the user's token to our provider.**
-   #1561 says it would. Here the model is `openai/…` with its own `api_key` in the config, and the
+   #1561 says it would, still at `520b19c`. Here the model is `openai/…` with its own `api_key` in the config, and the
    provider still got that key. It may differ for other providers or a model without a configured
    key; not run. The hook's guard (memory off when the setting is on) works either way.
 
@@ -75,9 +83,10 @@ one of those requests also carried the user's token.**
 
 ## Not covered by T1
 
-Offboarding (T5), Keycloak outages and hangs (T6), load (T7), a real tool server in Open WebUI
-(A5 used LiteLLM directly with Open WebUI's headers), streaming responses through the hook, and
-MemMachine core behind the gateway.
+Token exchange (T4), offboarding (T5), Keycloak outages and hangs (T6), load (T7), a real tool
+server in Open WebUI (A5 used LiteLLM directly with Open WebUI's headers), streaming responses
+through the hook, several LiteLLM workers, cancelled or regenerated replies, a stale binding after
+an erase, disable or team change, team projects, and MemMachine core behind the gateway.
 
 ## Test-only setup
 
