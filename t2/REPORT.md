@@ -10,9 +10,13 @@ flow, with DPoP proofs from a software P-256 key. Raw results: `$T1_ENV/logs/kc-
 names and selected values, never a token).
 
 **How checks are judged.** A refusal is ok only with the expected HTTP status and OAuth error code
-(for example `400 invalid_dpop_proof`); any other answer is FAIL; a 5xx, an exception or a missing
-answer is ERROR, never a pass. No ERROR occurred in any run. Records from the first script (schema 1)
-were re-judged by these rules; checks added since are "not run" there, shown as PASS\*.
+(for example `400 invalid_dpop_proof`); any other 4xx is FAIL. ERROR means the test got no verdict:
+an exception in the group, a 5xx, or a result missing from a full (schema-2) record. The one
+exception is a `501` naming its error ("Feature not enabled"), Keycloak's answer that a feature is
+absent, which is FAIL. "Not run" is reserved for checks added after a schema-1 record was taken.
+No ERROR occurred in any run. `t2/test_summarize.py` damages real records one way per case
+(exceptions, 5xx, lost results, no or non-overlapping concurrent rounds, a DPoP `token_type`) and
+checks the verdicts: 18 cases, all right.
 
 ## Result
 
@@ -54,9 +58,11 @@ Not covered). SK's actual version and configuration still need confirming.
   thumbprint). A refresh without a proof (`400 invalid_dpop_proof`) or with another key
   (`400 invalid_grant`) is refused, with the right key it succeeds. **The refresh token each refresh
   returns** is checked the same way: bound to the same key, refused without a proof and with another
-  key, accepted with the key, the access token still a bearer. Refreshes started together by a
-  barrier, 5 rounds, all overlapped in time and all succeeded (rotation off), and every refresh token
-  they returned was bound to the key; the last one passed the same checks.
+  key, accepted with the key, the access token still a bearer. Two refreshes released together by a
+  barrier, 5 rounds: in every round both succeeded (rotation off), both returned refresh tokens were
+  bound to the key, and the two client request intervals overlapped. That shows the requests were in
+  flight at once, not that the server processed them in parallel. The last returned token passed the
+  same checks. `token_type` Bearer is checked at sign-in and after every refresh stage.
 - **Offline token, idle limit, disable.** `offline_access` gives Open WebUI and mm-auth an Offline
   refresh token; a client's own offline idle limit (15 s) is enforced (refused with
   `400 invalid_grant` after it, past Keycloak's grace window); the token refreshes before disabling;
