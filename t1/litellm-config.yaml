@@ -42,3 +42,14 @@ general_settings:
       include_subpath: true
       forward_headers: true
       auth: true
+    # the same route with no LiteLLM key check: the platform's token check is the only guard
+    # auth: false applies only to a request whose path equals `path` (include_subpath requests
+    # fall back to key auth), so one exact route per memories API endpoint
+    - path: "/memmachine-open/api/v2/memories/search"
+      target: "http://127.0.0.1:18100/api/v2/memories/search"
+      forward_headers: true
+      auth: false
+    - path: "/memmachine-open/api/v2/memories"
+      target: "http://127.0.0.1:18100/api/v2/memories"
+      forward_headers: true
+      auth: false

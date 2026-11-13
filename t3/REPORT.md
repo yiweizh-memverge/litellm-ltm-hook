@@ -9,8 +9,9 @@ stop Claude Code. Memory calls work both directly to the platform and through Li
 pass-through route. The model calls carried no corporate token.
 
 Two findings for #1561: Claude Code passes a hook's `additionalContext` to the model whole only up
-to 10,000 characters (finding 1), and LiteLLM's open-source build gates the pass-through route's
-key permission (finding 2).
+to 10,000 characters (finding 1), and LiteLLM's pass-through route has two workable set-ups with
+different costs: LiteLLM also checks its own key (an Enterprise feature to set up cleanly), or only
+the platform checks the developer's token (finding 2).
 
 ## Versions
 
@@ -52,22 +53,28 @@ key permission (finding 2).
    sets no size for the memory block; `mm-auth`, and likely LiteLLM's hook for its own model,
    need a character budget. The prototype keeps whole episodes up to 9,000 characters and cuts
    any single episode at 2,000.
-2. **LiteLLM's pass-through route: the key permission is gated in the open-source build.** With
-   `auth: true` on the route (#1561: "LiteLLM asks for one on the route"), LiteLLM 1.98.0 admits a
-   key only if it holds `allowed_passthrough_routes`:
-   - A plain developer key gets 403. Only the master key passes without it.
-   - Setting `allowed_passthrough_routes` as a key field is refused as an Enterprise feature.
-   - Setting it in the key's or team's `metadata` is accepted and works.
-
-   With it in metadata:
-   - A developer key reaches the route and the models.
-   - A shared key that also has `allowed_routes: ["/memmachine/*"]` reaches only the route
-     (model calls get 403).
-   - Without a developer's token, the gateway refuses either key (`no-bearer`).
-
-   Whether the metadata form is a supported way on an unlicensed proxy is LiteLLM's to say. SK's
-   LiteLLM licence (or `auth: false` on the route, leaving the check to the platform) is a
-   question for T0.
+2. **LiteLLM's pass-through route has two workable set-ups, a trade-off.** #1561 gives the principle (the
+   developer's token forwarded unchanged; where LiteLLM keeps its own keys, one asked for on the route) but
+   not LiteLLM's configuration. In 1.98.0 with a key database:
+   - **Option A, LiteLLM also checks its own key** (`auth: true`, #1561's wording). A non-admin key is
+     refused (403) unless the route is granted to it or its team (`allowed_passthrough_routes`). A key
+     limited by `allowed_routes` alone also gets 403; only the master key passes without the grant.
+     Setting `allowed_passthrough_routes` as a key field is refused as an Enterprise feature; written
+     into the key's or team's `metadata` it was accepted and worked unlicensed. LiteLLM's route check
+     reads it from there, but this looks like a gap rather than a supported path. With the grant, a
+     shared key that also has `allowed_routes: ["/memmachine/*"]` reaches only the route (model calls
+     get 403). This option keeps LiteLLM's rate limits, spend and logs on memory calls.
+   - **Option B, LiteLLM checks no key** (`auth: false`), and the platform's token check is the only
+     guard. It works unlicensed, but LiteLLM honours `auth: false` only when the request path equals the
+     route's `path`: a prefix route with `include_subpath` falls back to key checks (a plain key got
+     401). So each endpoint `mm-auth` calls needs its own exact route (`/memmachine-open/api/v2/memories/search`
+     and `/memmachine-open/api/v2/memories` in `t1/litellm-config.yaml`); any other path got 404. The
+     exposure is the same as calling the platform directly, with no LiteLLM rate limits or spend.
+   - In both, a request without a developer's token reached no memory (`no-bearer`), the token reached
+     the gateway unchanged, and LiteLLM kept none of the run's tokens. `t3_check.py --via-litellm` ran
+     Option A; Option B was checked with direct requests.
+   - Not tested: LiteLLM's custom-auth mode. From the source, a custom auth function's result skips this
+     route check unless `enable_post_custom_auth_checks` is on.
 3. **LiteLLM sends `/v1/messages` to the Responses API for `openai/` models by default** (1.98.0).
    A provider that serves only chat completions needs `use_chat_completions_url_for_anthropic_messages`.
    This only affects which LiteLLM settings SK uses for Claude Code, not #1561.
@@ -96,8 +103,8 @@ key permission (finding 2).
 
 - Keycloak: client `mm-auth` (60 s access tokens), client role `dpop-bound`, client profile and
   policy `mm-auth-dpop`.
-- LiteLLM config: the Anthropic-to-chat-completions setting and the `/memmachine` pass-through
-  route.
+- LiteLLM config: the Anthropic-to-chat-completions setting, the `/memmachine` pass-through route
+  (Option A) and the two exact `/memmachine-open/...` routes (Option B).
 - LiteLLM database: test keys `t3-*` and one team `t3-team-*`.
 - `$T1_ENV/t3/`: `mm-auth`'s home (carol's sign-in), Claude Code's config directory, and the
   shared route key (600).
