@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# mm-auth for the T3 prototype: Python with PyJWT and cryptography (T1's LiteLLM venv).
+# #1561 ships one signed program per OS and architecture instead.
+exec "${MM_AUTH_PY:-$HOME/t1-tokenpath-env/litellm-venv/bin/python}" "$(dirname "$0")/mm_auth.py" "$@"

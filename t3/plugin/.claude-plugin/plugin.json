@@ -1,0 +1,5 @@
+{
+  "name": "mm-auth",
+  "version": "0.0.1-t3",
+  "description": "T3 prototype of #1561's mm-auth: MemMachine memory for Claude Code, signed in through the corporate provider"
+}

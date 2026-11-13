@@ -26,6 +26,7 @@ LOG = os.environ.get("FAKE_PROVIDER_LOG", "provider.jsonl")
 PORT = int(os.environ.get("FAKE_PROVIDER_PORT", "18200"))
 MODEL = "fake-model"
 
+MEMORY = "Memory (quoted data"
 TOOL_NAME = os.environ.get("FAKE_TOOL_NAME", "lookup_fact")
 app = FastAPI()
 
@@ -40,14 +41,40 @@ def _record(request: Request, body: dict) -> None:
         }) + "\n")
 
 
+def _texts(m) -> list:
+    c = m.get("content")
+    if isinstance(c, list):
+        return [str(p.get("text", "")) for p in c if isinstance(p, dict) and p.get("type", "text") == "text"]
+    return [str(c or "")]
+
+
 def _last_user_text(messages: list) -> str:
+    """The person's words: Claude Code's <system-reminder> parts and memory blocks left out."""
     for m in reversed(messages or []):
         if m.get("role") == "user":
-            c = m.get("content")
-            if isinstance(c, list):
-                c = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
-            return str(c or "")
+            parts = [t for t in _texts(m) if not t.lstrip().startswith("<system-reminder>") and MEMORY not in t]
+            if parts:
+                return " ".join(parts)
     return ""
+
+
+def _memory_lines(messages: list) -> list:
+    """Quoted lines of every memory block: Open WebUI's hook sends a system message, Claude Code's
+    hook an additionalContext that reaches the model inside a user message."""
+    out = []
+    for m in messages:
+        for t in _texts(m):
+            if MEMORY not in t:
+                continue
+            tail = t[t.index(MEMORY):].splitlines()[1:]
+            if t.lstrip().startswith(MEMORY):          # the whole message is the block (Open WebUI)
+                out += [l[2:] for l in tail if l.startswith("> ")]
+                continue
+            for l in tail:                             # a block inside other text (Claude Code)
+                if not l.startswith("> "):
+                    break
+                out.append(l[2:])
+    return out
 
 
 @app.get("/v1/models")
@@ -73,9 +100,7 @@ async def chat(request: Request):
                 "function": {"name": fn, "arguments": "{}"}}
         message, finish = {"role": "assistant", "content": None, "tool_calls": [call]}, "tool_calls"
     else:
-        mem = [m for m in messages if m.get("role") == "system"
-               and str(m.get("content", "")).startswith("Memory (quoted data")]
-        lines = [l[2:] for m in mem for l in str(m["content"]).splitlines() if l.startswith("> ")]
+        lines = _memory_lines(messages)
         note = f"\n\n[memory injected: {len(lines)} item(s)]" + "".join(f"\n- {l[:120]}" for l in lines)
         message, finish = {"role": "assistant", "content": f"OK: {_last_user_text(messages)[:200]}{note}"}, "stop"
 

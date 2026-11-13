@@ -1,0 +1,16 @@
+{
+  "issuer": "http://127.0.0.1:18180/realms/corp",
+  "client_id": "mm-auth",
+  "api": "http://127.0.0.1:18100",
+  "dpop": true,
+  "deadline_s": 5,
+  "store_deadline_s": 10,
+  "refresh_timeout_s": 4,
+  "backoff_s": [
+    15,
+    60,
+    300
+  ],
+  "context_max_chars": 9000,
+  "episode_max_chars": 2000
+}

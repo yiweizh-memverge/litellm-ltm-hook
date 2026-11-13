@@ -17,6 +17,9 @@ model_list:
 
 litellm_settings:
   drop_params: true
+  # T3: Claude Code's /v1/messages to the fake provider's chat/completions (LiteLLM 1.98 sends an
+  # openai/ model's Anthropic-format requests to the Responses API by default).
+  use_chat_completions_url_for_anthropic_messages: true
   request_timeout: 120
   # t1_probe records what a callback sees of the user's token (claims and a hash
   # only); t1_token_hook is the hook under test.
@@ -31,3 +34,11 @@ general_settings:
   forward_llm_provider_auth_headers: false
   # Worst case for the leak check: keep request bodies in the spend logs.
   store_prompts_in_spend_logs: true
+  # T3: mm-auth's memory calls where developers may reach only LiteLLM (#1561's pass-through
+  # route): LiteLLM checks its own key (x-litellm-api-key) and passes the developer's token on.
+  pass_through_endpoints:
+    - path: "/memmachine"
+      target: "http://127.0.0.1:18100"
+      include_subpath: true
+      forward_headers: true
+      auth: true
