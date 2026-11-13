@@ -85,6 +85,30 @@ one of those requests also carried the user's token.**
   `x-openwebui-*` IDs are kept.
 - A new workspace model is chat-able only after Open WebUI's model list refreshes (`/api/models`).
 
+## T1b: a real streaming turn and a real tool server (2026-11-13)
+
+`$PY t1/t1b_stream_tool.py` (the Open WebUI venv's Python, for socket.io); raw results in
+`$T1_ENV/logs/results-v0.12.5-t1b.json`. Open WebUI 0.12.5 runs tools (native function calling)
+only for a chat page's session, so the script signs alice in and connects to Open WebUI's socket.io
+as the page does, registers `t1/tool_server.py` (one OpenAPI tool, `lookup_fact`) as a tool server,
+and sends two prompts with streaming on. The fake provider streams text in 8-character pieces.
+
+| Check | Plain streaming turn | Tool turn |
+|---|---|---|
+| The page got the answer streamed; its deltas add up to the final text | PASS (66 deltas) | PASS (66 deltas; output: function call, its result, message) |
+| Every model request streamed, all of one turn | PASS (1 request) | PASS (2 requests; the second ends with the tool result) |
+| The tool server called once, by Open WebUI's server | — | PASS |
+| The hook searched once and stored once (store accepted) | PASS | PASS (`search`, `tool-round`, `token-changed`, `reuse`, `store`) |
+| The stored memory is the prompt and the answer the page received, exactly | PASS | PASS |
+
+In the tool turn Open WebUI refreshed the user's token between the two model requests (300 s
+tokens); the store used the latest token and was accepted, A6 in a real flow. Open WebUI offered the
+model 27–28 tools, its built-in ones besides `lookup_fact`. The tool server got no user token
+(`auth_type` none). LiteLLM does not pass Open WebUI's `x-openwebui-*` headers on to the provider.
+
+Not covered: cancel, regenerate, a broken stream, provider errors and retries, several tool rounds,
+a tool server on `system_oauth` (implementation acceptance, not the gate).
+
 ## T6 gate check: Keycloak hangs or is down (2026-11-12)
 
 `$PY t1/t6_hang.py`; raw results in `$T1_ENV/logs/results-t6.json`. Open WebUI 0.12.5, Keycloak
@@ -135,10 +159,9 @@ Redis; the browser's own behaviour while waiting (the chat UI, not the API).
 
 ## Not covered by T1
 
-Token exchange (T4), offboarding (T5), Keycloak outages and hangs (T6), load (T7), a real tool
-server in Open WebUI (A5 used LiteLLM directly with Open WebUI's headers), streaming responses
-through the hook, several LiteLLM workers, cancelled or regenerated replies, a stale binding after
-an erase, disable or team change, team projects, and MemMachine core behind the gateway.
+Token exchange (T4), offboarding (T5), load (T7), several LiteLLM workers, cancelled or
+regenerated replies, a stale binding after an erase, disable or team change, team projects, and
+MemMachine core behind the gateway. (Streaming and a real tool server: T1b; Keycloak outages: T6.)
 
 ## Test-only setup
 

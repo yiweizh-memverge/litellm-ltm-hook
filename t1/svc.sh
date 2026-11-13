@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start, stop or restart T1's host-side services, tracked by pid files in $T1_ENV/run.
 #
-#   t1/svc.sh start|stop|restart provider|gateway|litellm|openwebui|alias|all
+#   t1/svc.sh start|stop|restart provider|gateway|tools|litellm|openwebui|alias|all
 #   t1/svc.sh status
 #
 # litellm reads LITELLM_CONFIG (default t1/litellm-config.yaml) and LITELLM_EXTRA_ARGS
@@ -14,11 +14,12 @@ PY=$T1_ENV/litellm-venv/bin/python
 RUN=$T1_ENV/run; LOGS=$T1_ENV/logs
 mkdir -p "$RUN" "$LOGS"
 
-port_of() { case $1 in provider) echo 18200;; gateway) echo 18100;; litellm) echo 18011;; openwebui) echo 18087;; alias) echo 18088;; esac; }
+port_of() { case $1 in provider) echo 18200;; gateway) echo 18100;; tools) echo 18300;; litellm) echo 18011;; openwebui) echo 18087;; alias) echo 18088;; esac; }
 health_of() {
   case $1 in
     provider) echo http://127.0.0.1:18200/v1/models;;
     gateway) echo http://127.0.0.1:18100/t1/state;;
+    tools) echo http://127.0.0.1:18300/openapi.json;;
     litellm) echo http://127.0.0.1:18011/health/liveliness;;
     openwebui|alias) echo http://127.0.0.1:$(port_of "$1")/health;;
   esac
@@ -31,6 +32,7 @@ start_one() {
     provider) FAKE_PROVIDER_LOG=$LOGS/provider.jsonl setsid "$PY" "$T1/fake_provider.py" >"$LOGS/fake_provider.out" 2>&1 & ;;
     gateway)  T1_GATEWAY_LOG=$LOGS/gateway.jsonl T1_ALLOWED_CLIENTS=${T1_ALLOWED_CLIENTS:-open-webui,mm-auth,t1-tester} \
                 setsid "$PY" "$T1/gateway.py" >"$LOGS/gateway.out" 2>&1 & ;;
+    tools)    T1_TOOL_LOG=$LOGS/tool.jsonl setsid "$PY" "$T1/tool_server.py" >"$LOGS/tool_server.out" 2>&1 & ;;
     litellm)  setsid "$T1/run_litellm.sh" >"$LOGS/litellm.out" 2>&1 & ;;
     openwebui) setsid "$T1/run_openwebui.sh" >"$LOGS/openwebui.out" 2>&1 & ;;
     alias)    setsid "$PY" "$T1/port_alias.py" 18088 18087 >"$LOGS/port_alias.out" 2>&1 & ;;
@@ -57,7 +59,7 @@ stop_one() {
   echo "$s: port $p still in use"
 }
 
-ALL="provider gateway litellm openwebui alias"
+ALL="provider gateway tools litellm openwebui alias"
 cmd=${1:-status}; target=${2:-all}
 [ "$target" = all ] && targets=$ALL || targets=$target
 case $cmd in

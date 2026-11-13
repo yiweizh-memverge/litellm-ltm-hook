@@ -9,8 +9,9 @@ file for the user's Keycloak token.
 
 Replies:
   - a request offering tools whose last user message contains "[tool]" gets one
-    call to the first tool (for the tool-round check, A5);
-  - everything else gets "OK: <last user message>", streamed if asked.
+    call to FAKE_TOOL_NAME if offered (default lookup_fact), else to the first tool
+    (for the tool-round checks, A5 and T1b);
+  - everything else gets "OK: <last user message>", streamed in 8-character pieces if asked.
 """
 import json
 import os
@@ -25,6 +26,7 @@ LOG = os.environ.get("FAKE_PROVIDER_LOG", "provider.jsonl")
 PORT = int(os.environ.get("FAKE_PROVIDER_PORT", "18200"))
 MODEL = "fake-model"
 
+TOOL_NAME = os.environ.get("FAKE_TOOL_NAME", "lookup_fact")
 app = FastAPI()
 
 
@@ -65,7 +67,8 @@ async def chat(request: Request):
     created = int(time.time())
 
     if tools and last_is_user and "[tool]" in _last_user_text(messages):
-        fn = tools[0].get("function", {}).get("name", "tool")
+        names = [t.get("function", {}).get("name", "tool") for t in tools]
+        fn = TOOL_NAME if TOOL_NAME in names else names[0]       # Open WebUI adds its own tools too
         call = {"id": f"call_{uuid.uuid4().hex[:8]}", "type": "function",
                 "function": {"name": fn, "arguments": "{}"}}
         message, finish = {"role": "assistant", "content": None, "tool_calls": [call]}, "tool_calls"
@@ -87,7 +90,11 @@ async def chat(request: Request):
         delta = dict(message)
         if delta.get("tool_calls"):
             delta["tool_calls"] = [{**delta["tool_calls"][0], "index": 0}]
-        for d, fin in ((delta, None), ({}, finish)):
+            parts = [delta]
+        else:                                    # text in pieces, as a model streams it
+            text = delta.get("content") or ""
+            parts = [{"role": "assistant", "content": text[i:i + 8]} for i in range(0, len(text), 8)] or [delta]
+        for d, fin in [(p, None) for p in parts] + [({}, finish)]:
             chunk = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": MODEL,
                      "choices": [{"index": 0, "delta": d, "finish_reason": fin}]}
             yield f"data: {json.dumps(chunk)}\n\n"
