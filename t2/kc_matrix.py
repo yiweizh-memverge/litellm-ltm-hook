@@ -9,12 +9,18 @@ each issuing, using and refreshing real tokens, with a refusal case:
   dpop       mm-auth: public client, PKCE code flow, a client policy (dpop-bind-enforcer,
              allow-only-refresh-token-binding, auto-configure off) binding only the refresh
              token: the code exchange needs a proof, the access token stays a bearer (no cnf),
-             a refresh needs the same key's proof, two refreshes at once both succeed
-  offline    offline_access for Open WebUI and mm-auth; the client's offline idle limit applies;
-             a disabled person's refresh fails; whether re-enabling revives the old token
+             a refresh needs the same key's proof; every refresh token a refresh returns is
+             still bound to that key (cnf.jkt) and still refused without a proof or with
+             another key; refreshes started together (a barrier, 5 rounds) all succeed
+  offline    offline_access for Open WebUI and mm-auth; a client's offline idle limit and,
+             separately, its offline maximum while the token is refreshed every 10 s; a
+             disabled person's refresh fails; whether re-enabling revives the old token
   exchange   standard token exchange by LiteLLM's client to the platform-only audience, same
-             sub; refused: another audience, a subject token not naming LiteLLM, no secret
-  device     (conditional) device authorization request on mm-auth's client, PKCE included
+             sub; refused: another audience, a subject token not naming LiteLLM, no secret;
+             the exchanged token's expiry against a subject with less time left; and all of it
+             again with LiteLLM's service account off (its own token, and one from before,
+             refused)
+  device     (conditional) the device authorization request alone, PKCE included: no sign-in
 
     $PY t2/kc_matrix.py 26.8.1 [--features dpop,token-exchange-standard] [--keep-image]
 
@@ -56,7 +62,13 @@ ALICE_PW = "Alice-matrix-1"
 REDIRECT = "http://127.0.0.1:1/callback"
 OFFLINE_PROBE_IDLE = 15          # s; Keycloak adds a grace window of about 2 minutes to idle limits
 OFFLINE_PROBE_WAIT = 150
+OFFLINE_MAX = 30                 # s, a client's offline session maximum, probed by refreshing every 10 s
+OFFLINE_MAX_PROBE_FOR = 240
+SHORT_LIFESPAN = 60              # s, a subject token that expires before LiteLLM's exchanged one would
+CONCURRENT_ROUNDS = 5
+SCHEMA = 2
 SECRETS = {"open-webui": "owui-secret", "litellm": "litellm-secret", "memmachine-console": "console-secret", "offline-probe": "probe-secret",
+           "offline-max-probe": "max-secret", "owui-short": "short-secret",
            "memmachine-platform": "platform-secret", "other-api": "other-secret"}
 
 
@@ -154,6 +166,7 @@ def realm_rep():
                 "standardFlowEnabled": False, "directAccessGrantsEnabled": False, **kw}
     return {
         "realm": REALM, "enabled": True, "accessTokenLifespan": 300,
+        "offlineSessionMaxLifespanEnabled": True, "offlineSessionMaxLifespan": 5184000,
         "users": [{"username": "alice", "email": "alice@corp.example", "firstName": "Alice", "lastName": "Test",
                    "emailVerified": True, "enabled": True, "realmRoles": [f"default-roles-{REALM}"],
                    "credentials": [{"type": "password", "value": ALICE_PW, "temporary": False}]}],
@@ -172,6 +185,12 @@ def realm_rep():
             confidential("other-api"),
             confidential("offline-probe", directAccessGrantsEnabled=True,
                          attributes={"client.offline.session.idle.timeout": str(OFFLINE_PROBE_IDLE)}),
+            confidential("offline-max-probe", directAccessGrantsEnabled=True,
+                         attributes={"client.offline.session.idle.timeout": "3600",
+                                     "client.offline.session.max.lifespan": str(OFFLINE_MAX)}),
+            confidential("owui-short", directAccessGrantsEnabled=True,
+                         attributes={"access.token.lifespan": str(SHORT_LIFESPAN)},
+                         protocolMappers=[aud_mapper("litellm")]),
             {"clientId": "mm-auth", "enabled": True, "publicClient": True, "standardFlowEnabled": True,
              "directAccessGrantsEnabled": False, "redirectUris": [REDIRECT],
              "attributes": {"oauth2.device.authorization.grant.enabled": "true", "pkce.code.challenge.method": "S256"},
@@ -227,6 +246,17 @@ def dpop_proof(key, htm="POST", htu=TOKEN_URL):
     jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(key.public_key()))
     return jwt.encode({"jti": str(uuid.uuid4()), "htm": htm, "htu": htu, "iat": int(time.time())},
                       key, algorithm="ES256", headers={"typ": "dpop+jwt", "jwk": jwk})
+
+
+def jkt(key):
+    """RFC 7638 thumbprint of a key's public JWK, as DPoP's cnf.jkt carries it."""
+    j = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(key.public_key()))
+    canon = json.dumps({k: j[k] for k in ("crv", "kty", "x", "y")}, separators=(",", ":"), sort_keys=True)
+    return base64.urlsafe_b64encode(hashlib.sha256(canon.encode()).digest()).rstrip(b"=").decode()
+
+
+def bound_to(token):
+    return (claims(token).get("cnf") or {}).get("jkt")
 
 
 def pkce():
@@ -323,6 +353,13 @@ def g_contract():
     return out
 
 
+def protected(rt):
+    """A refresh token's protection: refused without a proof and with another key, bound to KEY1."""
+    return {"bound_to_key1": bound_to(rt) == jkt(KEY1),
+            "without_proof": status(*refresh("mm-auth", rt)),
+            "other_key": status(*refresh("mm-auth", rt, KEY2))}
+
+
 def g_dpop():
     out = {}
     s, js = code_flow("mm-auth")
@@ -333,21 +370,45 @@ def g_dpop():
         return out
     rt = js["refresh_token"]
     out["code_exchange_with_proof"] = {"status": 200, **bearer_shape(js), "refresh_cnf": "cnf" in claims(rt),
+                                       "refresh_bound_to_key1": bound_to(rt) == jkt(KEY1),
                                        "refresh_typ": claims(rt).get("typ")}
     out["refresh_without_proof_refused"] = status(*refresh("mm-auth", rt))
     out["refresh_other_key_refused"] = status(*refresh("mm-auth", rt, KEY2))
     s, js = refresh("mm-auth", rt, KEY1)
     out["refresh_right_key"] = status(s, js, **(bearer_shape(js) if s == 200 else {}))
+    if s != 200:
+        return out
+    # the refresh token a refresh returns must stay protected: mm-auth keeps using it
+    rt = js.get("refresh_token", rt)
+    out["after_refresh"] = protected(rt)
+    s, js = refresh("mm-auth", rt, KEY1)
+    out["after_refresh"]["right_key"] = status(s, js, **(bearer_shape(js) if s == 200 else {}))
     if s == 200:
         rt = js.get("refresh_token", rt)
-    res = [None, None]
+    # concurrent refreshes with rotation off: both start together, every returned token still protected
+    rounds = []
+    for _ in range(CONCURRENT_ROUNDS):
+        barrier, res = threading.Barrier(2), [None, None]
 
-    def go(i):
-        res[i] = refresh("mm-auth", rt, KEY1)[0]
-    ts = [threading.Thread(target=go, args=(i,)) for i in (0, 1)]
-    [t.start() for t in ts]
-    [t.join() for t in ts]
-    out["two_refreshes_at_once"] = res
+        def go(i):
+            barrier.wait()
+            t0 = time.time()
+            r = refresh("mm-auth", rt, KEY1)
+            res[i] = (r, t0, time.time())
+        ts = [threading.Thread(target=go, args=(i,)) for i in (0, 1)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        (r0, a0, b0), (r1, a1, b1) = res
+        rnd = {"statuses": [r0[0], r1[0]], "overlapped": a0 < b1 and a1 < b0}
+        new = [r[1]["refresh_token"] for r in (r0, r1) if r[0] == 200]
+        rnd["returned_bound_to_key1"] = [bound_to(x) == jkt(KEY1) for x in new]
+        rounds.append(rnd)
+        if new:
+            rt = new[0]
+    out["concurrent_rounds"] = rounds
+    out["after_concurrent"] = protected(rt)
+    s, js = refresh("mm-auth", rt, KEY1)
+    out["after_concurrent"]["right_key"] = status(s, js, **(bearer_shape(js) if s == 200 else {}))
     return out
 
 
@@ -375,6 +436,21 @@ def g_offline(t):
                                  "client_offline_idle_set_s": 86400, "realm_offline_idle_s": 2592000}
     s, js = code_flow("mm-auth", scope="openid offline_access", key=KEY1)
     out["mm_auth_offline"] = status(s, js, refresh_typ=claims(js["refresh_token"]).get("typ") if s == 200 else None)
+    # the client's own offline maximum, while the token is kept in use (refreshed every 10 s)
+    max_log = []
+
+    def max_probe():
+        _, m = password_grant("offline-max-probe", scope="openid offline_access")
+        mrt, t0 = m.get("refresh_token"), time.time()
+        while time.time() - t0 < OFFLINE_MAX_PROBE_FOR:
+            time.sleep(10)
+            s_, j_ = refresh("offline-max-probe", mrt, secret=SECRETS["offline-max-probe"])
+            max_log.append({"t_s": round(time.time() - t0), **status(s_, j_)})
+            if s_ != 200:
+                break
+            mrt = j_.get("refresh_token", mrt)
+    mt = threading.Thread(target=max_probe)
+    mt.start()
     # the client's own offline idle limit: two offline tokens, one used early, one only after the limit
     _, a = password_grant("offline-probe", scope="openid offline_access")
     _, b = password_grant("offline-probe", scope="openid offline_access")
@@ -383,6 +459,8 @@ def g_offline(t):
     s, js = refresh("offline-probe", b["refresh_token"], secret=SECRETS["offline-probe"])
     out["client_offline_idle_limit"] = {"limit_s": OFFLINE_PROBE_IDLE, "waited_s": OFFLINE_PROBE_WAIT,
                                         "refresh_within_limit": early, "refresh_after_limit": status(s, js)}
+    mt.join()
+    out["client_offline_max"] = {"max_s": OFFLINE_MAX, "refreshes": max_log}
     out["refresh_while_enabled"] = refresh("open-webui", rt, secret=SECRETS["open-webui"])[0]
     out["disable_user"] = set_enabled(t, False)
     out["refresh_after_disable_refused"] = status(*refresh("open-webui", rt, secret=SECRETS["open-webui"]))
@@ -406,6 +484,16 @@ def g_exchange(alice_sub):
     out["to_platform"] = {"status": 200, "same_sub": c.get("sub") == alice_sub, "azp": c.get("azp"),
                           "aud": c.get("aud"), "act": "act" in c, "lifespan_s": c["exp"] - c["iat"],
                           "subject_lifespan_left_s": claims(owui["access_token"])["exp"] - int(time.time())}
+    # lifetime: a subject token with less left than LiteLLM's client's lifespan
+    _, short = password_grant("owui-short")
+    time.sleep(SHORT_LIFESPAN - 25)
+    s, js = http("POST", TOKEN_URL, form={**base, "subject_token": short["access_token"],
+                                          "audience": "memmachine-platform"}, auth=lite)
+    sc = claims(short["access_token"])
+    xc = claims(js["access_token"]) if s == 200 else {}
+    out["short_subject"] = status(s, js, subject_left_s=sc["exp"] - int(time.time()),
+                                  exchanged_lifespan_s=(xc["exp"] - xc["iat"]) if xc else None,
+                                  exchanged_outlives_subject_s=(xc["exp"] - sc["exp"]) if xc else None)
     s, js = http("POST", TOKEN_URL, form={**base, "audience": "other-api"}, auth=lite)
     out["other_audience_refused"] = status(s, js, aud=claims(js["access_token"]).get("aud") if s == 200 else None)
     _, mm = code_flow("mm-auth", key=KEY1)                       # names the platform, not LiteLLM
@@ -428,10 +516,20 @@ def g_exchange(alice_sub):
     cl["serviceAccountsEnabled"] = False
     http("PUT", f"{BASE}/admin/realms/{REALM}/clients/{cl['id']}", body=cl, headers=h)
     _, owui2 = password_grant("open-webui")
+    off = {}
     s, js = http("POST", TOKEN_URL, form={**base, "subject_token": owui2["access_token"],
                                           "audience": "memmachine-platform"}, auth=lite)
-    s2, js2 = http("POST", TOKEN_URL, form={"grant_type": "client_credentials"}, auth=lite)
-    out["service_account_off"] = {"people_exchange": status(s, js), "own_token_refused": status(s2, js2)}
+    c = claims(js["access_token"]) if s == 200 else {}
+    off["people_exchange"] = status(s, js, same_sub=c.get("sub") == alice_sub, azp=c.get("azp"),
+                                    aud=c.get("aud"), act="act" in c)
+    s, js = http("POST", TOKEN_URL, form={**base, "subject_token": owui2["access_token"],
+                                          "audience": "other-api"}, auth=lite)
+    off["other_audience_refused"] = status(s, js)
+    off["own_token_refused"] = status(*http("POST", TOKEN_URL, form={"grant_type": "client_credentials"}, auth=lite))
+    s, js = http("POST", TOKEN_URL, form={**base, "subject_token": cj.get("access_token", "x"),
+                                          "audience": "memmachine-platform"}, auth=lite)
+    off["service_token_from_before_refused"] = status(s, js)
+    out["service_account_off"] = off
     return out
 
 
@@ -455,7 +553,7 @@ def main():
     ap.add_argument("--features", default="")
     ap.add_argument("--keep-image", action="store_true")
     a = ap.parse_args()
-    rec = {"version": a.version, "features_flag": a.features or None, "ts": time.time()}
+    rec = {"version": a.version, "features_flag": a.features or None, "ts": time.time(), "schema": SCHEMA}
     try:
         ok, info = start(a.version, a.features)
         rec["started"] = ok
