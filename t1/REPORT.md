@@ -137,6 +137,37 @@ T1's core checks and T1b still pass; T1b's tool turn now reads `search`, `tool-r
 re-checked, accepted, then stored. The re-check's failure path (a timeout or `unavailable`) was not
 run.
 
+## T4: the user's token exchanged by the hook, end to end (2026-11-13)
+
+#1561's recommended mode. `T1_TOKEN_MODE=exchange` in the stand-in hook: the first call with a user
+token exchanges it at Keycloak (RFC 8693) as LiteLLM's confidential client (`litellm`, standard
+exchange on, **no service account**, 300 s tokens) for one whose audience is the platform alone,
+and every search, re-check and store goes out with that. The result is cached by the user token's
+hash, no longer than the earlier of the two expiries; a refused exchange is remembered. The gateway
+in exchange mode honours only `litellm` (and `mm-auth`) and requires the platform audience.
+Setup: `$PY t1/t4_exchange.py setup` (Keycloak clients, LiteLLM's audience on Open WebUI's and
+t1-tester's tokens; the client secret in `$T1_ENV/exchange.env`). Keycloak 26.7.5, LiteLLM 1.98.0,
+Open WebUI 0.12.5. Raw results: `$T1_ENV/logs/results-v0.12.5-t4.json`.
+
+| ID | Check | Result |
+|---|---|---|
+| X1 | Memory round trip through Open WebUI | PASS |
+| X2 | Every gateway request carried an exchanged token (`azp` litellm, `aud` the platform alone), never the corporate one | PASS (5 of 5) |
+| X3 | The gateway refuses a corporate token sent to it directly | PASS (401, audience not the platform) |
+| X4 | A user token is exchanged once, then served from the hook's cache | PASS |
+| X5 | The cache ends at the user token's expiry: usable 9 s while the exchanged token lived 300 s; a replayed expired user token got no memory and reached nothing | PASS |
+| X6 | A token not issued for LiteLLM: exchange refused (403 `access_denied`) once, remembered, no memory | PASS |
+| X7 | LiteLLM's client gets no token of its own | PASS (401 `unauthorized_client`) |
+| X8 | Exchange latency, uncached, loopback | median ~22 ms |
+
+In exchange mode T1b (a real streaming turn and a real tool server through Open WebUI) and T1c (the
+re-check) also pass: Open WebUI's refresh mid-turn gave a new user token, the hook exchanged it and
+re-checked the binding with the exchanged token, then stored. Back in forwarding mode, T1's core
+checks and T1c pass too.
+
+Not covered: several LiteLLM workers (each would exchange once per token), the exchange's backoff
+after timeouts, 5xx or `429`, Keycloak hanging during an exchange, Keycloak in production mode.
+
 ## T6 gate check: Keycloak hangs or is down (2026-11-12)
 
 `$PY t1/t6_hang.py`; raw results in `$T1_ENV/logs/results-t6.json`. Open WebUI 0.12.5, Keycloak

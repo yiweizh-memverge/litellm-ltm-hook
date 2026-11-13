@@ -125,6 +125,15 @@ def stored_is(label, prompt, final):
     tok = rc.mint("alice@corp.example")["access_token"]
     s, js, _ = rc.http("POST", f"{rc.GATEWAY}/api/v2/memories/search", {"query": "t1b"},
                        {"Authorization": f"Bearer {tok}"})
+    if s == 401 and (rc.T1_ENV / "exchange.env").exists():     # gateway in T4's exchange mode
+        sec = dict(l.split("=", 1) for l in (rc.T1_ENV / "exchange.env").read_text().split())
+        _, x, _ = rc.http("POST", f"{rc.KC}/realms/{rc.REALM}/protocol/openid-connect/token", form={
+            "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange", "subject_token": tok,
+            "subject_token_type": "urn:ietf:params:oauth:token-type:access_token", "audience": "memmachine-platform"},
+            headers={"Authorization": "Basic " + rc.base64.b64encode(
+                f"litellm:{sec['T1_EXCHANGE_CLIENT_SECRET']}".encode()).decode()})
+        s, js, _ = rc.http("POST", f"{rc.GATEWAY}/api/v2/memories/search", {"query": "t1b"},
+                           {"Authorization": f"Bearer {x['access_token']}"})
     newest = (js or {}).get("episodes", [None])[-1]
     want = f"user: {prompt} | assistant: {final}"
     rc.record("T1b", f"{label}: stored memory = prompt + the answer the page received", newest == want,

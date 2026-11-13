@@ -9,6 +9,7 @@ Token checks, in order (any failure: 401, X-MemMachine-Decision: refused):
   - a Bearer token; RS256 only; signature against the issuer's JWKS
   - iss is the configured issuer; exp not passed (30 s leeway)
   - typ is "Bearer": Keycloak's access tokens carry it, ID tokens carry "ID"
+  - aud names the platform, if T1_REQUIRED_AUDIENCE is set (T4's exchange mode)
   - azp is a client named for the memories API (T1_ALLOWED_CLIENTS)
   - no client_id claim: Keycloak marks client-credentials tokens with it
   - a sub
@@ -51,6 +52,7 @@ from fastapi.responses import JSONResponse
 
 ISSUER = os.environ.get("T1_ISSUER", "http://127.0.0.1:18180/realms/corp")
 ALLOWED_CLIENTS = set(os.environ.get("T1_ALLOWED_CLIENTS", "open-webui,mm-auth").split(","))
+REQUIRED_AUDIENCE = os.environ.get("T1_REQUIRED_AUDIENCE", "")   # T4: "memmachine-platform"
 LOG = os.environ.get("T1_GATEWAY_LOG", "gateway.jsonl")
 PORT = int(os.environ.get("T1_GATEWAY_PORT", "18100"))
 LEEWAY = 30
@@ -100,7 +102,7 @@ def _safe_claims(token: str) -> dict:
         c = jwt.decode(token, options={"verify_signature": False})
     except Exception:
         return {"unparseable": True}
-    out = {k: c.get(k) for k in ("iss", "sub", "azp", "typ", "exp", "preferred_username")}
+    out = {k: c.get(k) for k in ("iss", "sub", "azp", "aud", "typ", "exp", "preferred_username")}
     out["client_id_claim"] = "client_id" in c
     out["token_sha256_12"] = hashlib.sha256(token.encode()).hexdigest()[:12]
     return out
@@ -131,6 +133,10 @@ async def _authenticate(request: Request):
         return None, _refuse(401, "refused", f"invalid:{type(e).__name__}", claims, path)
     if c.get("typ") != "Bearer":
         return None, _refuse(401, "refused", f"not-access-token:{c.get('typ')}", claims, path)
+    if REQUIRED_AUDIENCE:
+        aud = c.get("aud")
+        if REQUIRED_AUDIENCE not in (aud if isinstance(aud, list) else [aud]):
+            return None, _refuse(401, "refused", f"audience-not-platform:{aud}", claims, path)
     if c.get("azp") not in ALLOWED_CLIENTS:
         return None, _refuse(401, "refused", f"client-not-allowed:{c.get('azp')}", claims, path)
     if "client_id" in c:

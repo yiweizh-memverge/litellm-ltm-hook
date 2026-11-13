@@ -31,6 +31,15 @@ Rules:
       no tool                turn's latest token; no binding, no store;
   - any search or store failure: no memory for that turn, the chat goes on.
 
+T1_TOKEN_MODE=exchange (T4, #1561's recommended mode): the hook exchanges the user's token at
+Keycloak (RFC 8693) as LiteLLM's own confidential client, for one whose audience is the platform
+alone, and calls the gateway with that, never the user's token:
+  - the first call with a user token exchanges it; the result is kept, by the user token's hash,
+    no longer than the earlier of its own expiry and the user token's;
+  - a refused exchange is a refusal, remembered until the user token expires or the backoff cap
+    passes; a timeout, transport error, 5xx or 429 is a failure;
+  - T1_EXCHANGE_CLIENT_ID / T1_EXCHANGE_CLIENT_SECRET / T1_TOKEN_URL / T1_PLATFORM_AUDIENCE.
+
 Every decision goes to T1_HOOK_LOG with the token's SHA-256 prefix and its
 unverified sub, never the token. The token is kept only in this process's
 memory, never in request metadata, which LiteLLM writes to its spend logs.
@@ -52,6 +61,12 @@ PREFIX = "memmachine-"
 SEARCH_TIMEOUT = float(os.environ.get("T1_SEARCH_TIMEOUT", "3"))
 STORE_TIMEOUT = float(os.environ.get("T1_STORE_TIMEOUT", "10"))
 TURN_IDLE = 1800
+MODE = os.environ.get("T1_TOKEN_MODE", "forward")
+TOKEN_URL = os.environ.get("T1_TOKEN_URL", "http://127.0.0.1:18180/realms/corp/protocol/openid-connect/token")
+X_CLIENT = os.environ.get("T1_EXCHANGE_CLIENT_ID", "litellm")
+X_SECRET = os.environ.get("T1_EXCHANGE_CLIENT_SECRET", "")
+AUDIENCE = os.environ.get("T1_PLATFORM_AUDIENCE", "memmachine-platform")
+REFUSAL_CAP = 300
 
 
 def _log(event: str, **kw) -> None:
@@ -70,6 +85,14 @@ def _sub(token: str):
         return json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4))).get("sub")
     except Exception:
         return None
+
+
+def _exp(token: str) -> float:
+    try:
+        p = token.split(".")[1]
+        return float(json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4))).get("exp") or 0)
+    except Exception:
+        return 0.0
 
 
 def _text(content) -> str:
@@ -92,15 +115,60 @@ class TokenHook(CustomLogger):
     def __init__(self):
         super().__init__()
         self.turns: dict = {}
+        self.exchanged: dict = {}      # user token hash -> (platform token, usable until)
+        self.refused: dict = {}        # user token hash -> refused until
 
     def _gc(self):
         now = time.time()
         for k in [k for k, t in self.turns.items() if now - t["touched"] > TURN_IDLE]:
             self.turns.pop(k, None)
 
+    async def _platform_token(self, token: str):
+        """The bearer for the gateway: the user's token, or in exchange mode its exchanged one.
+
+        Returns (bearer, None) or (None, (status, decision)) for a refused or failed exchange."""
+        if MODE != "exchange":
+            return token, None
+        h, now = _hash(token), time.time()
+        hit = self.exchanged.get(h)
+        if hit and hit[1] > now:
+            _log("exchange", token=h, cached=True)
+            return hit[0], None
+        if self.refused.get(h, 0) > now:
+            _log("exchange", token=h, cached=True, outcome="refused")
+            return None, (403, "exchange-refused")
+        t0 = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as c:
+                r = await c.post(TOKEN_URL, auth=(X_CLIENT, X_SECRET), data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange", "subject_token": token,
+                    "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                    "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                    "audience": AUDIENCE})
+            status, js = r.status_code, (r.json() if r.content else {})
+        except Exception as e:
+            status, js = None, {"error": repr(e)[:80]}
+        ms = round((time.time() - t0) * 1000, 1)
+        if status == 200:
+            xt = js["access_token"]
+            until = min(_exp(xt), _exp(token))          # never past the user token's own expiry
+            self.exchanged[h] = (xt, until)
+            _log("exchange", token=h, cached=False, status=200, ms=ms, exchanged=_hash(xt),
+                 usable_s=round(until - now), exchanged_s=round(_exp(xt) - now), user_s=round(_exp(token) - now))
+            return xt, None
+        refused = isinstance(status, int) and 400 <= status < 500 and status != 429
+        if refused:
+            self.refused[h] = min(_exp(token) or now + REFUSAL_CAP, now + REFUSAL_CAP)
+        _log("exchange", token=h, cached=False, status=status, ms=ms, error=(js or {}).get("error"),
+             outcome="refused" if refused else "failed")
+        return None, ((403, "exchange-refused") if refused else (None, "exchange-failed"))
+
     async def _call(self, path: str, token: str, body: dict, timeout: float):
+        bearer, why = await self._platform_token(token)
+        if bearer is None:
+            return why[0], why[1], {}
         async with httpx.AsyncClient(timeout=timeout) as c:
-            r = await c.post(f"{GATEWAY}{path}", json=body, headers={"Authorization": f"Bearer {token}"})
+            r = await c.post(f"{GATEWAY}{path}", json=body, headers={"Authorization": f"Bearer {bearer}"})
         return r.status_code, r.headers.get("x-memmachine-decision"), (r.json() if r.content else {})
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
