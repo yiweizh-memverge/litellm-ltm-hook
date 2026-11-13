@@ -20,6 +20,10 @@ Memory API (bodies are JSON):
   POST /api/v2/memories         {"messages": [...], "binding": str}
        a store is refused (409, turn-outdated) if its binding names another
        account, or the account's memory was erased since the search.
+  POST /api/v2/memories/binding/check  {"binding": str}   -> {"binding": str}
+       the re-check a hook makes when a turn's token changes (#1561, "The
+       binding"): the same token checks and the same binding rule as a store,
+       answered from the account table alone: no search, no memory read.
 
 Test-only endpoints (no auth; this binds to 127.0.0.1):
   GET  /t1/state                 accounts, memory counts, refusal counts
@@ -187,6 +191,20 @@ async def store(request: Request):
     memory.setdefault(acct["id"], []).append({"text": " | ".join(texts), "ts": time.time()})
     _log({"path": request.url.path, "decision": "stored", "claims": claims, "account": acct["id"]})
     return {"status": "ok"}
+
+
+@app.post("/api/v2/memories/binding/check")
+async def check_binding(request: Request):
+    who, refusal = await _authenticate(request)
+    if refusal:
+        return refusal
+    acct, claims = who
+    body = await request.json()
+    b = _read_binding(body.get("binding") or "")
+    if b is None or b["a"] != acct["id"] or b["g"] != acct["generation"]:
+        return _refuse(409, "turn-outdated", "binding-mismatch", claims, request.url.path)
+    _log({"path": request.url.path, "decision": "rechecked", "claims": claims, "account": acct["id"]})
+    return {"binding": _make_binding(acct)}
 
 
 @app.get("/t1/state")

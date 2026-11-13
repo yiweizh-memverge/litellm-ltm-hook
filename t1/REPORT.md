@@ -109,6 +109,34 @@ model 27–28 tools, its built-in ones besides `lookup_fact`. The tool server go
 Not covered: cancel, regenerate, a broken stream, provider errors and retries, several tool rounds,
 a tool server on `system_oauth` (implementation acceptance, not the gate).
 
+## T1c: a new token mid-turn is re-checked before it gets memory (2026-11-13)
+
+Before T1c the stand-in hook, on a new token mid-turn, kept the turn's memory and added it back
+(`token-changed`, `reuse`): it showed a new token could store, not that it was authorized before
+receiving the cached memory. #1561's hook re-checks the turn's binding with the new token first.
+The stand-in now follows #1561's table: it keeps each token's outcome by hash; a new token is
+re-checked at the gateway (`POST /api/v2/memories/binding/check`, the stand-in's name: the same
+token checks and binding rule as a store, from the account table alone, no search); accepted, the
+result is added back; refused or failed, nothing with that token for the rest of the turn. A turn
+with no binding searches again with its prompt, which gives the binding and adds nothing.
+
+`$PY t1/t1c_recheck.py`; raw results in `$T1_ENV/logs/results-v0.12.5-t1c.json`. One turn per
+case, sent to LiteLLM as Open WebUI sends it, a tool round in between:
+
+| Case | Re-check | Memory added (per request) | Store |
+|---|---|---|---|
+| R1 same person, new token | 200 | yes, yes | 200 |
+| R2 another person's token, two more requests | 409 `turn-outdated`, once | yes, no, no | 409 |
+| R3 the person's memory erased mid-turn | 409 `turn-outdated` | yes, no | 409 |
+| R4 the person disabled mid-turn | 403 `account-disabled` | yes, no | 403 |
+| R5 same token | none | yes, yes | 200 |
+
+In every case the gateway served one search per turn, the first; the re-check was not a search.
+T1's core checks and T1b still pass; T1b's tool turn now reads `search`, `tool-round`,
+`token-changed`, `recheck`, `store`: Open WebUI's refresh between the two model requests is
+re-checked, accepted, then stored. The re-check's failure path (a timeout or `unavailable`) was not
+run.
+
 ## T6 gate check: Keycloak hangs or is down (2026-11-12)
 
 `$PY t1/t6_hang.py`; raw results in `$T1_ENV/logs/results-t6.json`. Open WebUI 0.12.5, Keycloak
