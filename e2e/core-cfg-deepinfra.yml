@@ -1,0 +1,100 @@
+# MemMachine core's configuration for the real e2e run, with DeepInfra models: the memmachine-platform
+# chart's cfg.yml (charts/memmachine-platform/templates/memmachine/apiserver/configmap.yaml at b38410e),
+# rendered by hand with semantic memory off and no neural reranker, as the chart does by default. Only
+# the endpoints differ: a local Postgres and Qdrant, DeepInfra's BAAI/bge-m3 (1024 dimensions,
+# multilingual) for OpenAI's text-embedding-3-small, and DeepInfra's Llama 3.3 70B as core's language
+# model (unused with semantic and short-term memory off). core-cfg.yml is the same with local models.
+server:
+  host: 127.0.0.1
+  port: 18081
+
+logging:
+  path: /tmp/memmachine.log
+  level: INFO
+
+episode_store:
+  database: profile_storage
+  with_count_cache: false
+
+episodic_memory:
+  short_term_memory_enabled: false
+  long_term_memory:
+    embedder: openai_embedder
+    reranker: my_reranker_id
+    backend: event
+    vector_store: my_vector_store_id
+    segment_store: profile_storage
+  short_term_memory:
+    llm_model: openai_model
+    message_capacity: 500
+
+retrieval_agent:
+  llm_model: openai_model
+  reranker: my_reranker_id
+
+semantic_memory:
+  enabled: false
+  with_config_cache: false
+  llm_model: openai_model
+  embedding_model: openai_embedder
+  database: profile_storage
+  config_database: profile_storage
+  ingestion_trigger_messages: 5
+  ingestion_trigger_age: 300
+
+session_manager:
+  database: profile_storage
+
+prompt:
+  default_project_categories:
+    - profile_prompt
+
+resources:
+  databases:
+    profile_storage:
+      provider: postgres
+      config:
+        host: 127.0.0.1
+        port: 15433
+        user: "memmachine"
+        password: "${POSTGRES_PASSWORD}"
+        db_name: memmachine_core
+        pool_size: 5
+        max_overflow: 5
+        pool_timeout: 30
+        pool_recycle: 3000
+        pool_pre_ping: true
+    my_vector_store_id:
+      provider: qdrant
+      config:
+        host: "127.0.0.1"
+        port: 16333
+        https: false
+        partition_registry: profile_storage
+  embedders:
+    openai_embedder:
+      provider: openai
+      config:
+        model: BAAI/bge-m3
+        base_url: https://api.deepinfra.com/v1/openai
+        dimensions: 1024
+        max_input_length: 2048
+        api_key: "${DEEPINFRA_API_KEY}"
+  language_models:
+    openai_model:
+      provider: openai-chat-completions
+      config:
+        model: meta-llama/Llama-3.3-70B-Instruct-Turbo
+        base_url: https://api.deepinfra.com/v1/openai
+        api_key: "${DEEPINFRA_API_KEY}"
+  rerankers:
+    my_reranker_id:
+      provider: "rrf-hybrid"
+      config:
+        reranker_ids:
+          - id_ranker_id
+          - bm_ranker_id
+    id_ranker_id:
+      provider: "identity"
+    bm_ranker_id:
+      provider: "bm25"

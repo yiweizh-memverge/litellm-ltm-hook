@@ -291,11 +291,30 @@ def access_token(budget):
 
 # ------------------------------------------------------------------ the memories API
 
+PLATFORM_NO_BINDING = "real-gateway-has-no-binding"
+
+
 def _api(path, token, body, timeout):
     h = {"Authorization": f"Bearer {token}"}
     if CONFIG.get("litellm_key"):                        # through LiteLLM's pass-through route
         h["x-litellm-api-key"] = CONFIG["litellm_key"]
-    return _http("POST", CONFIG["api"].rstrip("/") + path, body=body, headers=h, timeout=timeout)
+    if CONFIG.get("api_style") != "platform":
+        return _http("POST", CONFIG["api"].rstrip("/") + path, body=body, headers=h, timeout=timeout)
+    # The real memmachine-gateway's public API (/v2): no binding (#1561's design, not built), one
+    # episode per message, ranked best first. _render keeps from the end, so the ranking is reversed.
+    if path.endswith("/memories/search"):
+        req = {"query": body["query"], "top_k": CONFIG.get("top_k", 5), "types": ["episodic"]}
+        status, js = _http("POST", CONFIG["api"].rstrip("/") + "/v2/memories/search", body=req, headers=h,
+                           timeout=timeout)
+        if status == 200 and isinstance(js, dict):
+            ltm = ((js.get("content") or {}).get("episodic_memory") or {}).get("long_term_memory") or {}
+            eps = [f'{e.get("producer_role") or e.get("producer_id")}: {e.get("content")}'
+                   for e in ltm.get("episodes") or []]
+            js = {"episodes": list(reversed(eps)), "binding": PLATFORM_NO_BINDING}
+        return status, js
+    req = {"types": ["episodic"], "messages": [
+        {"content": m["content"] or "", "role": m["role"], "producer": m["role"]} for m in body["messages"]]}
+    return _http("POST", CONFIG["api"].rstrip("/") + "/v2/memories", body=req, headers=h, timeout=timeout)
 
 
 def _turn_file(sid):
@@ -353,7 +372,8 @@ def hook_search(inp):
             context, kept = _render(eps)
             outcome = "served"
         elif status in (401, 403, 409):
-            reason = (js or {}).get("reason") or (js or {}).get("decision") or f"HTTP {status}"
+            js = js if isinstance(js, dict) else {}
+            reason = js.get("reason") or js.get("decision") or f"HTTP {status}"
             outcome, message = "refused", f"memory refused for this prompt ({reason})."
         else:
             if status >= 500:

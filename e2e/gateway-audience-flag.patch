@@ -1,0 +1,52 @@
+From dd9862ef1730ffb30daa6bc56448f36a2362e543 Mon Sep 17 00:00:00 2001
+From: e2e <e2e@localhost>
+Date: Fri, 13 Nov 2026 17:22:33 -0500
+Subject: [PATCH] e2e test patch: --audience flag (default account, as main)
+
+---
+ cmd/memmachine-gateway/main.go        | 1 +
+ internal/memmachine/gateway/config.go | 2 ++
+ internal/memmachine/gateway/server.go | 2 +-
+ 3 files changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/cmd/memmachine-gateway/main.go b/cmd/memmachine-gateway/main.go
+index 73fd691..dd7b9ff 100644
+--- a/cmd/memmachine-gateway/main.go
++++ b/cmd/memmachine-gateway/main.go
+@@ -71,6 +71,7 @@ func main() {
+ 	cmd.Flags().StringVar(&cfg.JWKSURL, "jwks-url", "", "JWKS URL")
+ 
+ 	cmd.Flags().StringVar(&cfg.IssuerURL, "issuer-url", "", "JWT token issuer URL")
++	cmd.Flags().StringSliceVar(&cfg.Audiences, "audience", []string{"account"}, "audiences accepted in a token's aud")
+ 
+ 	cmd.Flags().StringVar(&cfg.PostgreSQL.Host, "postgres-host", "localhost", "PostgreSQL host")
+ 	cmd.Flags().Uint16Var(&cfg.PostgreSQL.Port, "postgres-port", 5432, "PostgreSQL port")
+diff --git a/internal/memmachine/gateway/config.go b/internal/memmachine/gateway/config.go
+index 79fee83..a358c1f 100644
+--- a/internal/memmachine/gateway/config.go
++++ b/internal/memmachine/gateway/config.go
+@@ -20,6 +20,8 @@ type Config struct {
+ 	UpstreamURL string
+ 	JWKSURL     string
+ 	IssuerURL   string
++	// Audiences the gateway accepts in a token's aud (e2e test patch; main hard-codes "account").
++	Audiences []string
+ 
+ 	// SemanticMemoryEnabled is whether core serves semantic memory. Off, the gateway refuses what only
+ 	// semantic memory would answer, rather than charging for nothing.
+diff --git a/internal/memmachine/gateway/server.go b/internal/memmachine/gateway/server.go
+index 0dd55f6..9a6b379 100644
+--- a/internal/memmachine/gateway/server.go
++++ b/internal/memmachine/gateway/server.go
+@@ -129,7 +129,7 @@ func NewServer(cfg *Config) (*Server, error) {
+ 		return nil, eris.Wrap(err, "Failed to get the readiness database handle")
+ 	}
+ 
+-	impl.jwtValidator, err = auth.SetupJWTValidator(cfg.JWKSURL, cfg.IssuerURL, []string{"account"})
++	impl.jwtValidator, err = auth.SetupJWTValidator(cfg.JWKSURL, cfg.IssuerURL, cfg.Audiences)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-- 
+2.56.0
+

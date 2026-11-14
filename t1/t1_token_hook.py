@@ -67,6 +67,33 @@ X_CLIENT = os.environ.get("T1_EXCHANGE_CLIENT_ID", "litellm")
 X_SECRET = os.environ.get("T1_EXCHANGE_CLIENT_SECRET", "")
 AUDIENCE = os.environ.get("T1_PLATFORM_AUDIENCE", "memmachine-platform")
 REFUSAL_CAP = 300
+# "platform": the real memmachine-gateway's public API (/v2, MemVerge/MemMachine-Platform main) in place
+# of the T1 stand-in's. It has no binding (#1561's design, not built), so a served search gives the
+# turn a placeholder binding, a re-check only asks whether the gateway admits the token
+# (/v2/projects/list), and a store is the two messages alone (e2e/README.md).
+API = os.environ.get("T1_API", "standin")
+TOP_K = int(os.environ.get("T1_TOP_K", "5"))
+NO_BINDING = "real-gateway-has-no-binding"
+
+
+def _to_platform(path, body):
+    if path.endswith("/memories/search"):
+        return "/v2/memories/search", {"query": body["query"], "top_k": TOP_K, "types": ["episodic"]}
+    if path.endswith("/binding/check"):
+        return "/v2/projects/list", {}
+    return "/v2/memories", {"types": ["episodic"], "messages": [
+        {"content": m["content"], "role": m["role"], "producer": m["role"]} for m in body["messages"]]}
+
+
+def _from_platform(path, status, js):
+    if status != 200 or not isinstance(js, dict):
+        return js if isinstance(js, dict) else {}
+    if path.endswith("/memories/search"):
+        ltm = ((js.get("content") or {}).get("episodic_memory") or {}).get("long_term_memory") or {}
+        eps = [f'{e.get("producer_role") or e.get("producer_id")}: {e.get("content")}'
+               for e in ltm.get("episodes") or []]
+        return {"episodes": eps, "binding": NO_BINDING}
+    return {"binding": NO_BINDING}
 
 
 def _log(event: str, **kw) -> None:
@@ -167,9 +194,14 @@ class TokenHook(CustomLogger):
         bearer, why = await self._platform_token(token)
         if bearer is None:
             return why[0], why[1], {}
+        if API == "platform":
+            path, body = _to_platform(path, body)
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.post(f"{GATEWAY}{path}", json=body, headers={"Authorization": f"Bearer {bearer}"})
-        return r.status_code, r.headers.get("x-memmachine-decision"), (r.json() if r.content else {})
+        js = r.json() if r.content else {}
+        if API == "platform":
+            js = _from_platform(path, r.status_code, js)
+        return r.status_code, r.headers.get("x-memmachine-decision"), js
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         try:

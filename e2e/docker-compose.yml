@@ -1,0 +1,45 @@
+# The real platform's storage and MemMachine core for the e2e run (host network, 127.0.0.1 only).
+#   docker compose -f e2e/docker-compose.yml --env-file $T1_ENV/real/e2e.env up -d
+# DeepInfra's models: CORE_CFG=./core-cfg-deepinfra.yml and DEEPINFRA_API_KEY in the environment
+# ($T1_ENV/real/deepinfra.env). A changed embedder needs empty stores: down -v first.
+# Postgres 15433 holds core's database and the gateway's (memmachine_backend); Qdrant 16333; core 18081.
+name: e2e-real
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    network_mode: host
+    command: ["postgres", "-p", "15433", "-c", "listen_addresses=127.0.0.1"]
+    environment:
+      POSTGRES_USER: memmachine
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: memmachine_core
+    volumes:
+      - pg:/var/lib/postgresql/data
+      - ./pg-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  qdrant:
+    image: qdrant/qdrant:v1.20.0
+    network_mode: host
+    environment:
+      QDRANT__SERVICE__HOST: 127.0.0.1
+      QDRANT__SERVICE__HTTP_PORT: "16333"
+      QDRANT__SERVICE__GRPC_PORT: "16334"
+    volumes:
+      - qdrant:/qdrant/storage
+  core:
+    image: memmachine/memmachine:0.4.1-a1@sha256:beb8ebd93990ea7059866c29b5f96105eba3edce71eef97af6393b5f1e90c05e
+    network_mode: host
+    command: ["sh", "-c", "exec memmachine-server"]
+    environment:
+      MEMORY_CONFIG: /cfg/cfg.yml
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      EMBEDDER_API_KEY: local-embedder
+      LLM_API_KEY: ${LLM_API_KEY}
+      DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
+      MEMMACHINE_WORKERS: "1"
+      HOST: 127.0.0.1          # the image sets 0.0.0.0, which overrides server.host
+    volumes:
+      - ${CORE_CFG:-./core-cfg.yml}:/cfg/cfg.yml:ro
+    depends_on: [postgres, qdrant]
+volumes:
+  pg: {}
+  qdrant: {}

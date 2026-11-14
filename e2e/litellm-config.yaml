@@ -1,0 +1,69 @@
+# GENERATED from t1/litellm-config.yaml for the real e2e run (e2e/README.md): the same models, hook and
+# settings, with the pass-through routes aimed at the real memmachine-gateway (127.0.0.1:18110, API /v2),
+# plus a real chat model on DeepInfra (DEEPINFRA_API_KEY from $T1_ENV/real/deepinfra.env):
+# memmachine-llama for Open WebUI (the hook acts on memmachine- models), llama for Claude Code.
+# LiteLLM config for T1 (LiteLLM 1.98.0, SK hynix's version).
+# Both models go to the fake provider (t1/fake_provider.py), which records every
+# header and body it receives for the leak checks.
+model_list:
+  # Gets memory: the hook acts only on memmachine- models.
+  - model_name: memmachine-fake
+    litellm_params:
+      model: openai/fake-model
+      api_base: http://127.0.0.1:18200/v1
+      api_key: fake-provider-key
+  # Plain model, for Open WebUI's background tasks (titles, tags, follow-ups).
+  - model_name: fake
+    litellm_params:
+      model: openai/fake-model
+      api_base: http://127.0.0.1:18200/v1
+      api_key: fake-provider-key
+  - model_name: memmachine-llama
+    litellm_params:
+      model: openai/meta-llama/Llama-3.3-70B-Instruct-Turbo
+      api_base: https://api.deepinfra.com/v1/openai
+      api_key: os.environ/DEEPINFRA_API_KEY
+  - model_name: llama
+    litellm_params:
+      model: openai/meta-llama/Llama-3.3-70B-Instruct-Turbo
+      api_base: https://api.deepinfra.com/v1/openai
+      api_key: os.environ/DEEPINFRA_API_KEY
+
+litellm_settings:
+  drop_params: true
+  # T3: Claude Code's /v1/messages to the fake provider's chat/completions (LiteLLM 1.98 sends an
+  # openai/ model's Anthropic-format requests to the Responses API by default).
+  use_chat_completions_url_for_anthropic_messages: true
+  request_timeout: 120
+  # t1_probe records what a callback sees of the user's token (claims and a hash
+  # only); t1_token_hook is the hook under test.
+  callbacks:
+    - t1_probe.probe
+    - t1_token_hook.handler
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  # Must stay off: with it on, LiteLLM forwards the user's token to the provider.
+  forward_llm_provider_auth_headers: false
+  # Worst case for the leak check: keep request bodies in the spend logs.
+  store_prompts_in_spend_logs: true
+  # T3: mm-auth's memory calls where developers may reach only LiteLLM (#1561's pass-through
+  # route): LiteLLM checks its own key (x-litellm-api-key) and passes the developer's token on.
+  pass_through_endpoints:
+    - path: "/memmachine"
+      target: "http://127.0.0.1:18110"
+      include_subpath: true
+      forward_headers: true
+      auth: true
+    # the same route with no LiteLLM key check: the platform's token check is the only guard
+    # auth: false applies only to a request whose path equals `path` (include_subpath requests
+    # fall back to key auth), so one exact route per memories API endpoint
+    - path: "/memmachine-open/v2/memories/search"
+      target: "http://127.0.0.1:18110/v2/memories/search"
+      forward_headers: true
+      auth: false
+    - path: "/memmachine-open/v2/memories"
+      target: "http://127.0.0.1:18110/v2/memories"
+      forward_headers: true
+      auth: false

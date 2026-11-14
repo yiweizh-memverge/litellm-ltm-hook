@@ -65,7 +65,10 @@ import mm_auth  # noqa: E402
 PY = rc.T1_ENV / "litellm-venv" / "bin" / "python"
 MM = str(PLUGIN / "mm-auth")
 CREDS = HOME / "credentials.json"
-seen_tokens = set()                 # mm-auth's access and refresh tokens met in this run
+# Claude Code's model calls use a developer's own LiteLLM key, not the master key: user_id carol,
+# models ["fake"], no admin role (made by hand, $T1_ENV/t3/dev-key; see REPORT.md)
+DEV_KEY = (E / "dev-key").read_text().strip()
+seen_tokens = set()                # mm-auth's access and refresh tokens met in this run
 
 
 def mm(*args, env=None, timeout=90):
@@ -99,7 +102,7 @@ def mmlog(t0, event=None):
 
 def claude(prompt):
     """One `claude -p` turn; returns its result, session, hook responses and time taken."""
-    key = rc.env_file("litellm.env")["LITELLM_MASTER_KEY"]
+    key = DEV_KEY
     env = {"PATH": f"/usr/bin:/bin:{Path.home() / '.local/bin'}", "HOME": str(Path.home()), "TERM": "dumb",
            "CLAUDE_CONFIG_DIR": str(CCONF), "MM_AUTH_HOME": str(HOME),
            **({"MM_AUTH_CONFIG": os.environ["MM_AUTH_CONFIG"]} if VIA_LITELLM else {}),
@@ -293,6 +296,37 @@ def no_token_in_model_calls(t0):
               f"{files}; gateway saw (azp, aud) {sorted(to_gw)}")
 
 
+def developer_key(t0):
+    """The key Claude Code used is an ordinary developer's: no admin rights, its calls billed to carol."""
+    master = rc.env_file("litellm.env")["LITELLM_MASTER_KEY"]
+    req = urllib.request.Request(f"{rc.LITELLM}/key/generate", data=b"{}", method="POST",
+                                 headers={"x-api-key": DEV_KEY, "Content-Type": "application/json"})
+    try:
+        admin = urllib.request.urlopen(req, timeout=10).status
+    except urllib.error.HTTPError as e:
+        admin = e.code
+    hashed = hashlib.sha256(DEV_KEY.encode()).hexdigest()
+    since = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(t0))
+    sql = ('SELECT api_key, "user", call_type, count(*) FROM "LiteLLM_SpendLogs" '
+           f"WHERE \"startTime\" >= '{since}' AND call_type LIKE '%messages%' GROUP BY 1, 2, 3")
+    rows = []
+    for _ in range(30):                         # LiteLLM writes spend logs in batches
+        out = subprocess.run(["docker", "exec", "t1-tokenpath-postgres-1", "psql", "-U", "litellm", "-p", "15432",
+                              "-h", "127.0.0.1", "-d", "litellm", "-At", "-F", "|", "-c", sql],
+                             capture_output=True, text=True).stdout
+        rows = [r.split("|") for r in out.splitlines() if r]
+        if rows:
+            break
+        time.sleep(3)
+    mine = sum(int(r[3]) for r in rows if r[0] == hashed and r[1] == "carol")
+    other = sum(int(r[3]) for r in rows if r[0] != hashed)
+    rc.record("K1", "Claude Code used carol's own developer key, not the master key: no admin rights, "
+                    "its model calls billed to carol",
+              DEV_KEY != master and admin in (401, 403) and mine > 0 and other == 0,
+              f"/key/generate with it {admin}; Claude Code model calls since the turns began: {mine} on carol's key, "
+              f"{other} on any other key")
+
+
 def concurrent_sessions(tag):
     wait_expiry()
     t0 = time.time()
@@ -391,6 +425,7 @@ def via_litellm():
     note_tokens()
     t0 = real_turns(tag)
     no_token_in_model_calls(t0)
+    developer_key(t0)
     for r in rc.results:
         r["id"] = "P-" + r["id"]
     seen = [e for e in rc.log_since("probe.jsonl", t0) if e.get("call_type") == "pass_through_endpoint"]
@@ -412,6 +447,7 @@ def main():
     t0 = real_turns(tag)
     concurrent_sessions(tag)
     no_token_in_model_calls(t0)
+    developer_key(t0)
     not_signed_in(tag)
     refresh_refused(tag)
     platform_hangs(tag)

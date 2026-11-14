@@ -22,7 +22,7 @@ the platform checks the developer's token (finding 2).
 | LiteLLM | 1.98.0, Claude Code's `/v1/messages` to the fake provider (`use_chat_completions_url_for_anthropic_messages`), pass-through route `/memmachine` with `auth: true` |
 | Gateway, model provider | T1 stand-ins |
 
-## Results (`t3/t3_check.py`, 12/12 PASS; `--via-litellm`, 5/5 PASS)
+## Results (`t3/t3_check.py`, 13/13 PASS; `--via-litellm`, 6/6 PASS)
 
 | ID | Check | Result |
 |---|---|---|
@@ -34,11 +34,12 @@ the platform checks the developer's token (finding 2).
 | H4 | More memory than Claude Code passes on whole: the block stays under the limit (8,051 characters, 4 of 5 episodes kept) and the newest is kept | PASS |
 | C1 | Access token expired, then three sessions at once: one refresh (the other two waited on the lock and used its token), all three served and stored, no new sign-in | PASS |
 | H3 | Model calls carry no corporate token. The provider saw only its own key, and Claude Code sent LiteLLM no `Authorization` header. None of the run's `mm-auth` tokens appeared in the provider's or LiteLLM's logs or LiteLLM's database. The gateway saw `azp` mm-auth | PASS |
+| K1 | Claude Code's model calls use an ordinary developer's LiteLLM key (`ANTHROPIC_API_KEY`), not the master key: `user_id` carol, models `["fake"]`, no admin role (`/key/generate` with it: 401). LiteLLM's spend logs put all 6 of the run's Claude Code requests on carol's key and none on any other | PASS |
 | F1 | Not signed in: Claude Code answers and shows "memory is off: not signed in. Run `mm-auth login` in a terminal." The gateway is not called | PASS |
 | F2 | Refresh refused (the offline session revoked at Keycloak): Claude Code answers and shows "your sign-in was refused (invalid_grant). Run `mm-auth login` again". There is one refresh attempt and no retries. A new sign-in brings memory back | PASS |
 | F3 | The platform hangs (gateway `SIGSTOP`). The first prompt waited 5.0 s, the hook's deadline; the next waited 8 ms, because a backoff was in place. Both were answered, with "memory unavailable …; retrying automatically" | PASS |
 | F3 | After the backoff, one probe finds the platform back, and memory and stores return | PASS |
-| P-H1..H4 | H1–H4 again with `mm-auth`'s memory calls through LiteLLM's pass-through route, using a shared route-only key: all PASS. The gateway still received `mm-auth`'s token unchanged, and no `mm-auth` token was in LiteLLM's logs or database | PASS |
+| P-H1..H4, P-K1 | H1–H4 and K1 again with `mm-auth`'s memory calls through LiteLLM's pass-through route, using a shared route-only key: all PASS. The gateway still received `mm-auth`'s token unchanged, and no `mm-auth` token was in LiteLLM's logs or database | PASS |
 
 "Shown" means the hook's `systemMessage`. It is read from `claude -p --output-format stream-json
 --include-hook-events`; the interactive screen was not looked at.
@@ -63,13 +64,22 @@ the platform checks the developer's token (finding 2).
      into the key's or team's `metadata` it was accepted and worked unlicensed. LiteLLM's route check
      reads it from there, but this looks like a gap rather than a supported path. With the grant, a
      shared key that also has `allowed_routes: ["/memmachine/*"]` reaches only the route (model calls
-     get 403). This option keeps LiteLLM's rate limits, spend and logs on memory calls.
+     get 403). LiteLLM then ties each memory call to the key it carries, for its rate limits and
+     request logs. The shared route key tested here counts all developers together. A developer's own
+     key, granted the route, would count each one, but `mm-auth` would need that key, and an admin to
+     grant every key or its team.
    - **Option B, LiteLLM checks no key** (`auth: false`), and the platform's token check is the only
      guard. It works unlicensed, but LiteLLM honours `auth: false` only when the request path equals the
      route's `path`: a prefix route with `include_subpath` falls back to key checks (a plain key got
      401). So each endpoint `mm-auth` calls needs its own exact route (`/memmachine-open/api/v2/memories/search`
      and `/memmachine-open/api/v2/memories` in `t1/litellm-config.yaml`); any other path got 404. The
-     exposure is the same as calling the platform directly, with no LiteLLM rate limits or spend.
+     exposure is the same as calling the platform directly. LiteLLM reads no key on these routes, so it
+     cannot tie a memory call to anyone, even if a developer's own key is sent along. Its rate limits
+     and per-key logs do not apply.
+   - Memory calls cost no model tokens, so LiteLLM's spend is 0 in both options. In the real-platform run
+     (`e2e/`), LiteLLM's spend logs held Option A's calls under the shared route key and Option B's
+     under no key. In both, the platform counts and limits memory calls per person by the token's
+     `sub`, whichever route they take.
    - In both, a request without a developer's token reached no memory (`no-bearer`), the token reached
      the gateway unchanged, and LiteLLM kept none of the run's tokens. `t3_check.py --via-litellm` ran
      Option A; Option B was checked with direct requests.
@@ -87,6 +97,9 @@ the platform checks the developer's token (finding 2).
 - No OS credential store: a 600 file, which is #1561's fallback on headless Linux.
 - The refresh runs in the hook's process with a timeout of its own, not in a detached process that
   outlives the hook.
+- `mm-auth`'s access token also names `account` in `aud`: the test client keeps Keycloak's default
+  scopes, where #1561 turns "Full scope allowed" off and drops the `roles` scope. The gateway stand-in
+  checks only that the platform is named.
 - No project file (personal memory only), no device-code sign-in, no job keys, and no 30-day
   expiry of turn state.
 - Hooks loaded with `--plugin-dir`, not managed settings, so `allowManagedHooksOnly` and the
@@ -105,6 +118,6 @@ the platform checks the developer's token (finding 2).
   policy `mm-auth-dpop`.
 - LiteLLM config: the Anthropic-to-chat-completions setting, the `/memmachine` pass-through route
   (Option A) and the two exact `/memmachine-open/...` routes (Option B).
-- LiteLLM database: test keys `t3-*` and one team `t3-team-*`.
-- `$T1_ENV/t3/`: `mm-auth`'s home (carol's sign-in), Claude Code's config directory, and the
-  shared route key (600).
+- LiteLLM database: test keys `t3-*`, carol's developer key `t3-dev-carol`, and one team `t3-team-*`.
+- `$T1_ENV/t3/`: `mm-auth`'s home (carol's sign-in), Claude Code's config directory, carol's
+  developer key (`dev-key`) and the shared route key (600).
